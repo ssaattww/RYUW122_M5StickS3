@@ -1,21 +1,30 @@
 #include <M5Unified.h>
 
+#include "NtShell.h"
+#include "PreferenceCommands.h"
+
+namespace
+{
+    NtShell ntShell(Serial);
+    PreferenceCommands preferenceCommands("ryuw122", "ryuw122_meta");
+}
+
+/**
+ * @brief M5StackとNT-Shellを初期化します。
+ */
 void setup()
 {
     M5.begin();
-    M5.Display.fillScreen(TFT_BLUE);
+    Serial.begin(115200);
+    preferenceCommands.Begin();
+    ntShell.RegisterCommands(preferenceCommands.GetCommands());
+    ntShell.Start();
 }
 
+/**
+ * @brief M5Stackの入力状態を更新します。
+ */
 void loop()
 {
     M5.update();
-
-    if (M5.BtnA.wasPressed())
-    {
-        M5.Display.fillScreen(TFT_YELLOW);
-    }
-    if (M5.BtnB.wasPressed())
-    {
-        M5.Display.fillScreen(M5.Display.color565(255, 75, 0)); // 朱色
-    }
 }
