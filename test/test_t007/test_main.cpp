@@ -124,6 +124,102 @@ namespace
         memcpy(packet.payload, &wire, sizeof(wire));
         return packet;
     }
+
+    EspNowReceivedPacket EncodeControl(
+        SequentialRangingProtocolCodec& codec,
+        uint32_t sessionId,
+        uint32_t sequence,
+        const RangeControlData& control,
+        const uint8_t destinationMac[6],
+        const uint8_t sourceMac[6],
+        uint32_t receivedUs)
+    {
+        RangeControlPacket wire{};
+        TEST_ASSERT_TRUE(codec.EncodeControl(
+            sessionId, sequence, control, wire));
+        EspNowReceivedPacket packet{};
+        memcpy(packet.sourceMac, sourceMac, 6);
+        memcpy(packet.destinationMac, destinationMac, 6);
+        packet.receivedTimestampUs = receivedUs;
+        packet.payloadLength = sizeof(wire);
+        memcpy(packet.payload, &wire, sizeof(wire));
+        return packet;
+    }
+
+    EspNowReceivedPacket EncodeForward(
+        SequentialRangingProtocolCodec& codec,
+        uint32_t sessionId,
+        uint32_t sequence,
+        RangeMeasurementData measurement,
+        const uint8_t destinationMac[6],
+        const uint8_t sourceMac[6])
+    {
+        measurement.commandReceivedMasterTimeUs =
+            measurement.commandReceivedUs;
+        measurement.rangingStartedMasterTimeUs =
+            measurement.rangingStartedUs;
+        measurement.rangingCompletedMasterTimeUs =
+            measurement.rangingCompletedUs;
+        measurement.synchronizationRoundTripUs = 20;
+        measurement.synchronizationAgeUs = 30;
+        measurement.timeQuality = EnTimeQuality::Synchronized;
+        RangeMeasurementPacket wire{};
+        TEST_ASSERT_TRUE(codec.EncodeMeasurementForward(
+            sessionId, sequence, measurement, wire));
+        EspNowReceivedPacket packet{};
+        memcpy(packet.sourceMac, sourceMac, 6);
+        memcpy(packet.destinationMac, destinationMac, 6);
+        packet.payloadLength = sizeof(wire);
+        memcpy(packet.payload, &wire, sizeof(wire));
+        return packet;
+    }
+
+    EspNowReceivedPacket EncodeComplete(
+        SequentialRangingProtocolCodec& codec,
+        uint32_t sessionId,
+        uint32_t sequence,
+        const RangeRoundCompleteData& complete,
+        const uint8_t destinationMac[6],
+        const uint8_t sourceMac[6])
+    {
+        RangeRoundCompletePacket wire{};
+        TEST_ASSERT_TRUE(codec.EncodeRoundComplete(
+            sessionId, sequence, complete, wire));
+        EspNowReceivedPacket packet{};
+        memcpy(packet.sourceMac, sourceMac, 6);
+        memcpy(packet.destinationMac, destinationMac, 6);
+        packet.payloadLength = sizeof(wire);
+        memcpy(packet.payload, &wire, sizeof(wire));
+        return packet;
+    }
+
+    StubSentPacket TransferSent(
+        EspNowTransport& sourceTransport,
+        const NodeStatus& source,
+        EspNowTransport& destinationTransport)
+    {
+        StubSentPacket sent{};
+        TEST_ASSERT_TRUE(sourceTransport.TakeSent(sent));
+        destinationTransport.Inject(MakeReceived(
+            sent, source.macAddress, static_cast<uint32_t>(g_nowUs)));
+        return sent;
+    }
+
+    void CompleteSuccess(
+        Ryuw122Controller& ryuw122,
+        const NodeStatus& tag,
+        uint32_t distanceMm)
+    {
+        Ryuw122RangingResult result{};
+        memcpy(result.tagAddress, tag.uwbAddress, 9);
+        result.status = EnRyuw122RangingStatus::Success;
+        result.distanceMm = distanceMm;
+        result.uwbRssi = -60;
+        result.startedAtUs = static_cast<uint32_t>(g_nowUs + 1U);
+        result.completedAtUs = static_cast<uint32_t>(g_nowUs + 2U);
+        g_nowUs += 2U;
+        ryuw122.Complete(result);
+    }
 }
 
 void setUp()
@@ -160,6 +256,69 @@ void TestFollowerDoesNotStartRound()
     TEST_ASSERT_EQUAL_UINT32(0, ryuw122.StartCount());
     StubSentPacket sent{};
     TEST_ASSERT_FALSE(transport.TakeSent(sent));
+}
+
+void TestFollowerRejectsReorderedAndDuplicateRoundComplete()
+{
+    const NodeStatus tags[] = {
+        MakeNode(1, EnRunMode::Tag), MakeNode(2, EnRunMode::Tag)};
+    const NodeStatus anchor = MakeNode(10, EnRunMode::Anchor);
+    const NodeStatus all[] = {tags[0], tags[1], anchor};
+    EspNowTransport transport;
+    EspNowBroadcast broadcast;
+    ConfigureBroadcast(broadcast, tags[1], all, 3);
+    TagMasterCoordinator coordinator;
+    coordinator.SetMaster(MakeMaster(tags[0]), false);
+    NtpTimeSynchronizer sync;
+    sync.SetSynchronized(2);
+    Ryuw122Controller ryuw;
+    SequentialRangingProtocolCodec codec;
+    SequentialRangingController controller(transport, broadcast, coordinator,
+        sync, ryuw, codec, GetNowUs);
+    controller.Begin();
+
+    RangeMeasurementData measurement = MakeMeasurement(tags[0], &anchor, 1,
+        tags, 2, 0, 1);
+    measurement.roundId = 2;
+    transport.Inject(EncodeForward(codec, 100, 10, measurement,
+        tags[1].macAddress, tags[0].macAddress));
+    controller.Update();
+    TimedRangeMeasurement event{};
+    TEST_ASSERT_TRUE(controller.TryTakeMeasurement(event));
+    TEST_ASSERT_EQUAL_UINT32(2, event.roundId);
+
+    RangeRoundCompleteData stale{};
+    stale.roundId = 1;
+    stale.nextRoundId = 2;
+    stale.masterTagId = 1;
+    memcpy(stale.masterMac, tags[0].macAddress, 6);
+    stale.startedMasterTimeUs = 100;
+    stale.completedMasterTimeUs = 200;
+    stale.anchorCount = 1;
+    stale.tagCount = 2;
+    stale.expectedMeasurementCount = 2;
+    stale.receivedMeasurementCount = 2;
+    transport.Inject(EncodeComplete(codec, 100, 20, stale,
+        tags[1].macAddress, tags[0].macAddress));
+    controller.Update();
+    SequentialRangeRoundSummary summary{};
+    TEST_ASSERT_FALSE(controller.TryTakeCompletedRound(summary));
+
+    RangeRoundCompleteData current = stale;
+    current.roundId = 2;
+    current.nextRoundId = 3;
+    current.startedMasterTimeUs = 300;
+    current.completedMasterTimeUs = 400;
+    transport.Inject(EncodeComplete(codec, 100, 21, current,
+        tags[1].macAddress, tags[0].macAddress));
+    controller.Update();
+    TEST_ASSERT_TRUE(controller.TryTakeCompletedRound(summary));
+    TEST_ASSERT_EQUAL_UINT32(2, summary.roundId);
+
+    transport.Inject(EncodeComplete(codec, 100, 22, current,
+        tags[1].macAddress, tags[0].macAddress));
+    controller.Update();
+    TEST_ASSERT_FALSE(controller.TryTakeCompletedRound(summary));
 }
 
 void TestOneAnchorOneTagRunsTwoRoundsContinuously()
@@ -226,6 +385,106 @@ void TestOneAnchorOneTagRunsTwoRoundsContinuously()
     TEST_ASSERT_TRUE(codec.DecodeControl(nextControl.payload,
         nextControl.payloadLength, session, sequence, decoded));
     TEST_ASSERT_EQUAL_UINT32(2, decoded.roundId);
+}
+
+void TestRoundCompletionWaitsForNewSynchronization()
+{
+    const NodeStatus tag = MakeNode(1, EnRunMode::Tag);
+    const NodeStatus anchor = MakeNode(10, EnRunMode::Anchor);
+    const NodeStatus all[] = {tag, anchor};
+    EspNowTransport transport;
+    EspNowBroadcast broadcast;
+    ConfigureBroadcast(broadcast, tag, all, 2);
+    TagMasterCoordinator coordinator;
+    coordinator.SetMaster(MakeMaster(tag), true);
+    NtpTimeSynchronizer sync;
+    sync.SetSynchronized(10);
+    Ryuw122Controller ryuw;
+    SequentialRangingProtocolCodec codec;
+    SequentialRangingController controller(transport, broadcast, coordinator,
+        sync, ryuw, codec, GetNowUs);
+    controller.Begin();
+    controller.Update();
+    StubSentPacket initialControl{};
+    TEST_ASSERT_TRUE(transport.TakeSent(initialControl));
+
+    sync.m_complete = false;
+    RangeMeasurementData measurement = MakeMeasurement(tag, &anchor, 1,
+        &tag, 1, 0, 0);
+    transport.Inject(EncodeMeasurement(codec, 100, 10, measurement,
+        tag.macAddress, anchor.macAddress));
+    controller.Update();
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(
+            EnSequentialRangingState::WaitingForSynchronization),
+        static_cast<uint8_t>(controller.GetState()));
+    StubSentPacket blockedControl{};
+    TEST_ASSERT_FALSE(transport.TakeSent(blockedControl));
+
+    sync.m_complete = true;
+    controller.Update();
+    StubSentPacket nextControl{};
+    TEST_ASSERT_TRUE(transport.TakeSent(nextControl));
+    uint32_t session = 0;
+    uint32_t sequence = 0;
+    RangeControlData decoded{};
+    TEST_ASSERT_TRUE(codec.DecodeControl(nextControl.payload,
+        nextControl.payloadLength, session, sequence, decoded));
+    TEST_ASSERT_EQUAL_UINT32(2, decoded.roundId);
+}
+
+void TestNewRoundAcceptsControlFromChangedSourceWithLowerSequence()
+{
+    const NodeStatus nodes[] = {
+        MakeNode(1, EnRunMode::Tag), MakeNode(10, EnRunMode::Anchor),
+        MakeNode(20, EnRunMode::Anchor)};
+    EspNowTransport transport;
+    EspNowBroadcast broadcast;
+    ConfigureBroadcast(broadcast, nodes[2], nodes, 3);
+    TagMasterCoordinator coordinator;
+    coordinator.SetMaster(MakeMaster(nodes[0]), false);
+    NtpTimeSynchronizer sync;
+    sync.SetSynchronized(20);
+    Ryuw122Controller ryuw;
+    SequentialRangingProtocolCodec codec;
+    SequentialRangingController controller(transport, broadcast, coordinator,
+        sync, ryuw, codec, GetNowUs);
+    controller.Begin();
+
+    RangeControlData first{};
+    first.roundId = 1;
+    first.pairSequence = 2;
+    first.masterTagId = 1;
+    memcpy(first.masterMac, nodes[0].macAddress, 6);
+    first.anchorCount = 2;
+    first.tagCount = 1;
+    first.anchorIndex = 1;
+    first.anchorIds[0] = 10;
+    first.anchorIds[1] = 20;
+    first.tagIds[0] = 1;
+    transport.Inject(EncodeControl(codec, 100, 100, first,
+        nodes[2].macAddress, nodes[1].macAddress,
+        static_cast<uint32_t>(g_nowUs)));
+    controller.Update();
+    TEST_ASSERT_EQUAL_UINT32(1, ryuw.StartCount());
+    CompleteSuccess(ryuw, nodes[0], 1000);
+    controller.Update();
+
+    RangeControlData second{};
+    second.roundId = 2;
+    second.pairSequence = 1;
+    second.masterTagId = 1;
+    memcpy(second.masterMac, nodes[0].macAddress, 6);
+    second.anchorCount = 1;
+    second.tagCount = 1;
+    second.anchorIndex = 0;
+    second.anchorIds[0] = 20;
+    second.tagIds[0] = 1;
+    transport.Inject(EncodeControl(codec, 100, 5, second,
+        nodes[2].macAddress, nodes[0].macAddress,
+        static_cast<uint32_t>(g_nowUs)));
+    controller.Update();
+    TEST_ASSERT_EQUAL_UINT32(2, ryuw.StartCount());
 }
 
 void TestTwoAnchorTwoTagOrderAndAnchorForwarding()
@@ -529,11 +788,209 @@ void TestRoundTimeoutPublishesFailureSummary()
     TEST_ASSERT_EQUAL_UINT8(0, summary.receivedMeasurementCount);
 }
 
+void TestThreeAnchorTwoTagConnectedEndToEndFlow()
+{
+    const NodeStatus tags[] = {
+        MakeNode(1, EnRunMode::Tag), MakeNode(2, EnRunMode::Tag)};
+    const NodeStatus anchors[] = {
+        MakeNode(10, EnRunMode::Anchor), MakeNode(20, EnRunMode::Anchor),
+        MakeNode(30, EnRunMode::Anchor)};
+    const NodeStatus all[] = {
+        tags[0], tags[1], anchors[0], anchors[1], anchors[2]};
+    SequentialRangingProtocolCodec codec;
+
+    EspNowTransport masterTransport;
+    EspNowBroadcast masterBroadcast;
+    ConfigureBroadcast(masterBroadcast, tags[0], all, 5);
+    TagMasterCoordinator masterCoordinator;
+    masterCoordinator.SetMaster(MakeMaster(tags[0]), true);
+    NtpTimeSynchronizer masterSync;
+    masterSync.SetSynchronized(2);
+    masterSync.SetSynchronized(10);
+    masterSync.SetSynchronized(20);
+    masterSync.SetSynchronized(30);
+    Ryuw122Controller masterRyuw;
+    SequentialRangingController master(masterTransport, masterBroadcast,
+        masterCoordinator, masterSync, masterRyuw, codec, GetNowUs);
+
+    EspNowTransport followerTransport;
+    EspNowBroadcast followerBroadcast;
+    ConfigureBroadcast(followerBroadcast, tags[1], all, 5);
+    TagMasterCoordinator followerCoordinator;
+    followerCoordinator.SetMaster(MakeMaster(tags[0]), false);
+    NtpTimeSynchronizer followerSync;
+    followerSync.SetSynchronized(2);
+    Ryuw122Controller followerRyuw;
+    SequentialRangingController follower(followerTransport, followerBroadcast,
+        followerCoordinator, followerSync, followerRyuw, codec, GetNowUs);
+
+    EspNowTransport anchorTransports[3];
+    EspNowBroadcast anchorBroadcasts[3];
+    TagMasterCoordinator anchorCoordinators[3];
+    NtpTimeSynchronizer anchorSynchronizers[3];
+    Ryuw122Controller anchorRyuws[3];
+    for (uint8_t index = 0; index < 3; ++index)
+    {
+        ConfigureBroadcast(anchorBroadcasts[index], anchors[index], all, 5);
+        anchorCoordinators[index].SetMaster(MakeMaster(tags[0]), false);
+        anchorSynchronizers[index].SetSynchronized(anchors[index].nodeID);
+    }
+    SequentialRangingController anchorOne(anchorTransports[0],
+        anchorBroadcasts[0], anchorCoordinators[0], anchorSynchronizers[0],
+        anchorRyuws[0], codec, GetNowUs);
+    SequentialRangingController anchorTwo(anchorTransports[1],
+        anchorBroadcasts[1], anchorCoordinators[1], anchorSynchronizers[1],
+        anchorRyuws[1], codec, GetNowUs);
+    SequentialRangingController anchorThree(anchorTransports[2],
+        anchorBroadcasts[2], anchorCoordinators[2], anchorSynchronizers[2],
+        anchorRyuws[2], codec, GetNowUs);
+    SequentialRangingController* anchorControllers[] = {
+        &anchorOne, &anchorTwo, &anchorThree};
+
+    master.Begin();
+    follower.Begin();
+    for (SequentialRangingController* controller : anchorControllers)
+    {
+        controller->Begin();
+    }
+    master.Update();
+    StubSentPacket initialControl = TransferSent(masterTransport, tags[0],
+        anchorTransports[0]);
+    uint32_t session = 0;
+    uint32_t sequence = 0;
+    RangeControlData decodedControl{};
+    TEST_ASSERT_TRUE(codec.DecodeControl(initialControl.payload,
+        initialControl.payloadLength, session, sequence, decodedControl));
+    TEST_ASSERT_EQUAL_UINT32(1, decodedControl.roundId);
+    anchorControllers[0]->Update();
+
+    const uint8_t expectedAnchorIds[] = {10, 10, 20, 20, 30, 30};
+    const uint8_t expectedTagIds[] = {1, 2, 1, 2, 1, 2};
+    uint8_t masterEventIndex = 0;
+    uint8_t followerEventCount = 0;
+    StubSentPacket nextRoundControl{};
+    for (uint8_t anchorIndex = 0; anchorIndex < 3; ++anchorIndex)
+    {
+        for (uint8_t tagIndex = 0; tagIndex < 2; ++tagIndex)
+        {
+            TEST_ASSERT_EQUAL_UINT32(tagIndex + 1U,
+                anchorRyuws[anchorIndex].StartCount());
+            TEST_ASSERT_EQUAL_STRING(tags[tagIndex].uwbAddress,
+                anchorRyuws[anchorIndex].StartedAt(tagIndex));
+            CompleteSuccess(anchorRyuws[anchorIndex], tags[tagIndex],
+                static_cast<uint32_t>(1000U + masterEventIndex));
+            anchorControllers[anchorIndex]->Update();
+
+            if (tagIndex == 1U && anchorIndex < 2U)
+            {
+                StubSentPacket nextAnchorControl = TransferSent(
+                    anchorTransports[anchorIndex], anchors[anchorIndex],
+                    anchorTransports[anchorIndex + 1U]);
+                RangeControlData forwardedControl{};
+                TEST_ASSERT_TRUE(codec.DecodeControl(nextAnchorControl.payload,
+                    nextAnchorControl.payloadLength, session, sequence,
+                    forwardedControl));
+                TEST_ASSERT_EQUAL_UINT8(anchorIndex + 1U,
+                    forwardedControl.anchorIndex);
+                TEST_ASSERT_EQUAL_UINT16(
+                    static_cast<uint16_t>((anchorIndex + 1U) * 2U + 1U),
+                    forwardedControl.pairSequence);
+                anchorControllers[anchorIndex + 1U]->Update();
+                anchorControllers[anchorIndex]->Update();
+            }
+
+            StubSentPacket measurement = TransferSent(
+                anchorTransports[anchorIndex], anchors[anchorIndex],
+                masterTransport);
+            RangeMeasurementData decodedMeasurement{};
+            TEST_ASSERT_TRUE(codec.DecodeMeasurement(measurement.payload,
+                measurement.payloadLength,
+                EnSequentialRangingPacketType::RangeMeasurement,
+                session, sequence, decodedMeasurement));
+            TEST_ASSERT_EQUAL_UINT8(anchorIndex,
+                decodedMeasurement.anchorIndex);
+            TEST_ASSERT_EQUAL_UINT8(tagIndex, decodedMeasurement.tagIndex);
+            master.Update();
+            TimedRangeMeasurement masterEvent{};
+            TEST_ASSERT_TRUE(master.TryTakeMeasurement(masterEvent));
+            TEST_ASSERT_EQUAL_UINT8(expectedAnchorIds[masterEventIndex],
+                masterEvent.anchorId);
+            TEST_ASSERT_EQUAL_UINT8(expectedTagIds[masterEventIndex],
+                masterEvent.tagId);
+            ++masterEventIndex;
+
+            if (tagIndex == 1U && anchorIndex < 2U)
+            {
+                TransferSent(masterTransport, tags[0], followerTransport);
+                follower.Update();
+                TimedRangeMeasurement followerEvent{};
+                TEST_ASSERT_TRUE(follower.TryTakeMeasurement(followerEvent));
+                TEST_ASSERT_EQUAL_UINT8(2, followerEvent.tagId);
+                ++followerEventCount;
+            }
+            else if (tagIndex == 1U && anchorIndex == 2U)
+            {
+                TEST_ASSERT_TRUE(masterTransport.TakeSent(nextRoundControl));
+                RangeControlData roundTwo{};
+                TEST_ASSERT_TRUE(codec.DecodeControl(nextRoundControl.payload,
+                    nextRoundControl.payloadLength, session, sequence,
+                    roundTwo));
+                TEST_ASSERT_EQUAL_UINT32(2, roundTwo.roundId);
+                TEST_ASSERT_EQUAL_UINT8(0, roundTwo.anchorIndex);
+            }
+
+            if (masterEventIndex < 6U)
+            {
+                SequentialRangeRoundSummary incomplete{};
+                TEST_ASSERT_FALSE(master.TryTakeCompletedRound(incomplete));
+            }
+        }
+    }
+    TEST_ASSERT_EQUAL_UINT8(6, masterEventIndex);
+    SequentialRangeRoundSummary masterSummary{};
+    TEST_ASSERT_TRUE(master.TryTakeCompletedRound(masterSummary));
+    TEST_ASSERT_EQUAL_UINT8(6, masterSummary.receivedMeasurementCount);
+    TEST_ASSERT_FALSE(masterSummary.timedOut);
+
+    anchorThree.Update();
+    StubSentPacket anchorComplete{};
+    TEST_ASSERT_TRUE(anchorTransports[2].TakeSent(anchorComplete));
+    RangeRoundCompleteData decodedAnchorComplete{};
+    TEST_ASSERT_TRUE(codec.DecodeRoundComplete(anchorComplete.payload,
+        anchorComplete.payloadLength, session, sequence,
+        decodedAnchorComplete));
+    TEST_ASSERT_EQUAL_UINT32(1, decodedAnchorComplete.roundId);
+
+    master.Update();
+    TransferSent(masterTransport, tags[0], followerTransport);
+    follower.Update();
+    TimedRangeMeasurement finalFollowerEvent{};
+    TEST_ASSERT_TRUE(follower.TryTakeMeasurement(finalFollowerEvent));
+    TEST_ASSERT_EQUAL_UINT8(30, finalFollowerEvent.anchorId);
+    ++followerEventCount;
+
+    master.Update();
+    StubSentPacket followerComplete = TransferSent(
+        masterTransport, tags[0], followerTransport);
+    RangeRoundCompleteData decodedFollowerComplete{};
+    TEST_ASSERT_TRUE(codec.DecodeRoundComplete(followerComplete.payload,
+        followerComplete.payloadLength, session, sequence,
+        decodedFollowerComplete));
+    follower.Update();
+    SequentialRangeRoundSummary followerSummary{};
+    TEST_ASSERT_TRUE(follower.TryTakeCompletedRound(followerSummary));
+    TEST_ASSERT_EQUAL_UINT32(1, followerSummary.roundId);
+    TEST_ASSERT_EQUAL_UINT8(3, followerEventCount);
+}
+
 int main(int, char**)
 {
     UNITY_BEGIN();
     RUN_TEST(TestFollowerDoesNotStartRound);
+    RUN_TEST(TestFollowerRejectsReorderedAndDuplicateRoundComplete);
     RUN_TEST(TestOneAnchorOneTagRunsTwoRoundsContinuously);
+    RUN_TEST(TestRoundCompletionWaitsForNewSynchronization);
+    RUN_TEST(TestNewRoundAcceptsControlFromChangedSourceWithLowerSequence);
     RUN_TEST(TestTwoAnchorTwoTagOrderAndAnchorForwarding);
     RUN_TEST(TestMasterPublishesEachTwoByTwoMeasurementInOrder);
     RUN_TEST(TestDuplicateWrongSourceAndWrongSessionAreIgnored);
@@ -541,5 +998,6 @@ int main(int, char**)
     RUN_TEST(TestMasterChangeClearsQueuedEventsAndRound);
     RUN_TEST(TestNtpConversionFailurePublishesUnsynchronizedQuality);
     RUN_TEST(TestRoundTimeoutPublishesFailureSummary);
+    RUN_TEST(TestThreeAnchorTwoTagConnectedEndToEndFlow);
     return UNITY_END();
 }

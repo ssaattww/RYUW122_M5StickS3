@@ -216,6 +216,7 @@ void SequentialRangingController::ResetSessionState()
     m_lastControlPairSequence = 0;
     m_lastControlPacketSequence = 0;
     m_lastCompleteSequence = 0;
+    m_lastCompletedRoundId = 0;
     m_nextPacketSequence = 0;
     m_anchorCommandReceivedUs = 0;
     m_anchorListTruncated = false;
@@ -305,10 +306,10 @@ void SequentialRangingController::HandleControl(
         ++m_diagnostics.invalidPacketCount;
         return;
     }
-    if (!IsNewerSequence(sequence, m_lastControlPacketSequence) ||
-        control.roundId < m_lastControlRoundId ||
+    if (control.roundId < m_lastControlRoundId ||
         (control.roundId == m_lastControlRoundId &&
-         control.pairSequence <= m_lastControlPairSequence))
+         (!IsNewerSequence(sequence, m_lastControlPacketSequence) ||
+          control.pairSequence <= m_lastControlPairSequence)))
     {
         ++m_diagnostics.duplicatePacketCount;
         return;
@@ -548,12 +549,19 @@ void SequentialRangingController::HandleRoundComplete(
     }
     if (local.mode != EnRunMode::Tag ||
         !IsSameMac(packet.sourceMac, m_master.macAddress) ||
+        complete.roundId < m_roundId ||
+        complete.roundId <= m_lastCompletedRoundId ||
         !IsNewerSequence(sequence, m_lastCompleteSequence))
     {
         ++m_diagnostics.invalidPacketCount;
         return;
     }
     m_lastCompleteSequence = sequence;
+    m_lastCompletedRoundId = complete.roundId;
+    if (complete.roundId > m_roundId)
+    {
+        m_roundId = complete.roundId;
+    }
     SequentialRangeRoundSummary summary{};
     summary.sessionId = sessionId;
     summary.roundId = complete.roundId;
@@ -740,7 +748,14 @@ void SequentialRangingController::CompleteMasterRound(bool timedOut)
     complete.timedOut = missingBits != 0U;
     QueueRoundCompleteForFollowers(complete);
     m_state = EnSequentialRangingState::ReadyToStart;
-    StartMasterRound();
+    if (m_synchronizer.IsSynchronizationComplete())
+    {
+        StartMasterRound();
+    }
+    else
+    {
+        m_state = EnSequentialRangingState::WaitingForSynchronization;
+    }
 }
 
 bool SequentialRangingController::StartCurrentAnchorRanging()

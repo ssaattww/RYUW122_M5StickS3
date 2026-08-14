@@ -425,6 +425,7 @@ private:
     uint16_t m_lastControlPairSequence = 0;
     uint32_t m_lastControlPacketSequence = 0;
     uint32_t m_lastCompleteSequence = 0;
+    uint32_t m_lastCompletedRoundId = 0;
     uint32_t m_nextPacketSequence = 0;
     uint32_t m_anchorCommandReceivedUs = 0;
     bool m_anchorListTruncated = false;
