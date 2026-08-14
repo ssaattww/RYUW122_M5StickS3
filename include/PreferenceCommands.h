@@ -1,39 +1,23 @@
 #pragma once
 
-#include <Preferences.h>
-
-#include <string>
+#include <cstddef>
 #include <vector>
 
 #include "NtShell.h"
+#include "NvsPreferenceStore.h"
 
 /**
- * @brief ESP32のPreferencesをNT-Shellから確認・変更するコマンドを提供します。
+ * @brief 型情報付きNVSをNT-Shellから操作するコマンドを提供します。
  */
 class PreferenceCommands
 {
 public:
     /**
-     * @brief 指定されたNVS名前空間を使用するコマンド群を生成します。
+     * @brief NVSストアを利用するコマンド群を生成します。
      *
-     * @param namespaceName 使用する値保存用NVS名前空間
-     * @param metadataNamespaceName 使用する型情報保存用NVS名前空間
+     * @param store コマンドから操作するNVSストア
      */
-    PreferenceCommands(
-        const char* namespaceName,
-        const char* metadataNamespaceName);
-
-    /**
-     * @brief Preferencesの使用を終了します。
-     */
-    ~PreferenceCommands();
-
-    /**
-     * @brief NVS名前空間を読み書き可能な状態で開きます。
-     *
-     * @return 名前空間を開けた場合はtrue、それ以外はfalse
-     */
-    bool Begin();
+    explicit PreferenceCommands(NvsPreferenceStore& store);
 
     /**
      * @brief NT-Shellへ登録するコマンド一覧を取得します。
@@ -43,6 +27,17 @@ public:
     const std::vector<NtShell::Command>& GetCommands() const;
 
 private:
+    /**
+     * @brief 一覧出力で使用するコンテキストを保持します。
+     */
+    struct ListContext
+    {
+        Stream* m_output = nullptr;
+        PreferenceCommands* m_commands = nullptr;
+        size_t m_outputItemCount = 0;
+        size_t m_valueErrorCount = 0;
+    };
+
     /**
      * @brief NT-Shellのコールバックを対象インスタンスへ転送します。
      *
@@ -56,6 +51,14 @@ private:
         int argc,
         char* argv[],
         void* context);
+
+    /**
+     * @brief NVS一覧項目をコマンド出力へ変換します。
+     *
+     * @param entry 一覧項目
+     * @param context 一覧出力コンテキスト
+     */
+    static void VisitListEntry(const NvsEntryInfo& entry, void* context);
 
     /**
      * @brief prefコマンドのサブコマンドを解析して実行します。
@@ -97,6 +100,15 @@ private:
     void ListValues(Stream& output);
 
     /**
+     * @brief 一覧の正常項目を読み出して出力します。
+     *
+     * @param output コマンド結果の出力先
+     * @param entry 出力する項目
+     * @return 値の読み出し結果
+     */
+    EnNvsResult WriteListValue(Stream& output, const NvsEntryInfo& entry);
+
+    /**
      * @brief コマンドの使用方法を表示します。
      *
      * @param output コマンド結果の出力先
@@ -104,7 +116,7 @@ private:
     void PrintHelp(Stream& output) const;
 
     /**
-     * @brief Preferencesを利用できる状態か検査します。
+     * @brief NVSストアを利用できる状態か検査します。
      *
      * @param output エラーの出力先
      * @return 利用できる場合はtrue、それ以外はfalse
@@ -112,7 +124,7 @@ private:
     bool EnsureStarted(Stream& output) const;
 
     /**
-     * @brief NVSキーが有効な長さか検査します。
+     * @brief NVSキーが有効か検査します。
      *
      * @param output エラーの出力先
      * @param key 検査するキー
@@ -120,10 +132,6 @@ private:
      */
     bool ValidateKey(Stream& output, const char* key) const;
 
-    Preferences m_preferences;
-    Preferences m_metadataPreferences;
-    std::string m_namespace;
-    std::string m_metadataNamespace;
+    NvsPreferenceStore& m_store;
     std::vector<NtShell::Command> m_commands;
-    bool m_started = false;
 };

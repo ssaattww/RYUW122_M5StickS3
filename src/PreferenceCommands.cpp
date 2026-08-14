@@ -10,102 +10,8 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "nvs.h"
-
 namespace
 {
-    constexpr size_t MaxNvsNameLength = 15;
-
-    enum class EnStoredType : uint8_t
-    {
-        Unknown = 0,
-        Bool,
-        I8,
-        U8,
-        I16,
-        U16,
-        I32,
-        U32,
-        I64,
-        U64,
-        Float,
-        Double,
-        String,
-    };
-
-    /**
-     * @brief コマンドで指定された型名を保存用の型IDへ変換します。
-     *
-     * @param typeName 変換する型名
-     * @return 対応する型ID、未対応の場合はUnknown
-     */
-    EnStoredType ParseStoredType(const char* typeName)
-    {
-        if (strcmp(typeName, "bool") == 0) return EnStoredType::Bool;
-        if (strcmp(typeName, "i8") == 0) return EnStoredType::I8;
-        if (strcmp(typeName, "u8") == 0) return EnStoredType::U8;
-        if (strcmp(typeName, "i16") == 0) return EnStoredType::I16;
-        if (strcmp(typeName, "u16") == 0) return EnStoredType::U16;
-        if (strcmp(typeName, "i32") == 0) return EnStoredType::I32;
-        if (strcmp(typeName, "u32") == 0) return EnStoredType::U32;
-        if (strcmp(typeName, "i64") == 0) return EnStoredType::I64;
-        if (strcmp(typeName, "u64") == 0) return EnStoredType::U64;
-        if (strcmp(typeName, "float") == 0) return EnStoredType::Float;
-        if (strcmp(typeName, "double") == 0) return EnStoredType::Double;
-        if (strcmp(typeName, "string") == 0) return EnStoredType::String;
-        return EnStoredType::Unknown;
-    }
-
-    /**
-     * @brief 保存用の型IDに対応する表示名を取得します。
-     *
-     * @param type 保存用の型ID
-     * @return 型の表示名
-     */
-    const char* GetStoredTypeName(EnStoredType type)
-    {
-        switch (type)
-        {
-        case EnStoredType::Bool: return "bool";
-        case EnStoredType::I8: return "i8";
-        case EnStoredType::U8: return "u8";
-        case EnStoredType::I16: return "i16";
-        case EnStoredType::U16: return "u16";
-        case EnStoredType::I32: return "i32";
-        case EnStoredType::U32: return "u32";
-        case EnStoredType::I64: return "i64";
-        case EnStoredType::U64: return "u64";
-        case EnStoredType::Float: return "float";
-        case EnStoredType::Double: return "double";
-        case EnStoredType::String: return "string";
-        default: return "unknown";
-        }
-    }
-
-    /**
-     * @brief キーに保存された型IDを読み出します。
-     *
-     * @param preferences 型情報用Preferences
-     * @param key 読み出すキー
-     * @return 保存された型ID、存在しないか不正な場合はUnknown
-     */
-    EnStoredType GetStoredType(Preferences& preferences, const char* key)
-    {
-        if (!preferences.isKey(key))
-        {
-            return EnStoredType::Unknown;
-        }
-
-        const uint8_t value = preferences.getUChar(key);
-        if (value < static_cast<uint8_t>(EnStoredType::Bool) ||
-            value > static_cast<uint8_t>(EnStoredType::String))
-        {
-            return EnStoredType::Unknown;
-        }
-
-        return static_cast<EnStoredType>(value);
-    }
-
     /**
      * @brief 符号付き整数の文字列を64bit整数へ変換します。
      *
@@ -115,19 +21,11 @@ namespace
      */
     bool ParseSigned(const char* text, int64_t& value)
     {
-        if (text == nullptr || text[0] == '\0')
-        {
-            return false;
-        }
-
+        if (text == nullptr || text[0] == '\0') return false;
         errno = 0;
         char* endPointer = nullptr;
         const long long parsedValue = strtoll(text, &endPointer, 0);
-        if (errno == ERANGE || endPointer == text || *endPointer != '\0')
-        {
-            return false;
-        }
-
+        if (errno == ERANGE || endPointer == text || *endPointer != '\0') return false;
         value = static_cast<int64_t>(parsedValue);
         return true;
     }
@@ -141,19 +39,11 @@ namespace
      */
     bool ParseUnsigned(const char* text, uint64_t& value)
     {
-        if (text == nullptr || text[0] == '\0' || text[0] == '-')
-        {
-            return false;
-        }
-
+        if (text == nullptr || text[0] == '\0' || text[0] == '-') return false;
         errno = 0;
         char* endPointer = nullptr;
         const unsigned long long parsedValue = strtoull(text, &endPointer, 0);
-        if (errno == ERANGE || endPointer == text || *endPointer != '\0')
-        {
-            return false;
-        }
-
+        if (errno == ERANGE || endPointer == text || *endPointer != '\0') return false;
         value = static_cast<uint64_t>(parsedValue);
         return true;
     }
@@ -167,22 +57,12 @@ namespace
      */
     bool ParseFloatingPoint(const char* text, double& value)
     {
-        if (text == nullptr || text[0] == '\0')
-        {
-            return false;
-        }
-
+        if (text == nullptr || text[0] == '\0') return false;
         errno = 0;
         char* endPointer = nullptr;
         const double parsedValue = strtod(text, &endPointer);
-        if (errno == ERANGE ||
-            endPointer == text ||
-            *endPointer != '\0' ||
-            !std::isfinite(parsedValue))
-        {
-            return false;
-        }
-
+        if (errno == ERANGE || endPointer == text || *endPointer != '\0' ||
+            !std::isfinite(parsedValue)) return false;
         value = parsedValue;
         return true;
     }
@@ -209,11 +89,7 @@ namespace
     void AppendUnsigned(String& output, uint64_t value)
     {
         char buffer[32];
-        snprintf(
-            buffer,
-            sizeof(buffer),
-            "%llu",
-            static_cast<unsigned long long>(value));
+        snprintf(buffer, sizeof(buffer), "%llu", static_cast<unsigned long long>(value));
         output += buffer;
     }
 
@@ -222,35 +98,60 @@ namespace
      *
      * @param output 出力先
      * @param text 改行を含まない出力文字列
-     * @return 送信できた場合はtrue、文字列領域を確保できない場合はfalse
+     * @return 送信できた場合はtrue、それ以外はfalse
      */
     bool WriteLine(Stream& output, String text)
     {
-        if (!text.reserve(text.length() + 2))
-        {
-            return false;
-        }
-
+        if (!text.reserve(text.length() + 2)) return false;
         text += "\r\n";
         return output.write(
             reinterpret_cast<const uint8_t*>(text.c_str()),
             text.length()) == text.length();
     }
 
+    /**
+     * @brief NVS処理結果を既存コマンドのエラー文字列へ変換します。
+     *
+     * @param result NVS処理結果
+     * @return エラー文字列
+     */
+    const char* GetErrorText(EnNvsResult result)
+    {
+        switch (result)
+        {
+        case EnNvsResult::NotStarted: return "ERROR preferences_not_started";
+        case EnNvsResult::InvalidNamespace: return "ERROR invalid_namespace";
+        case EnNvsResult::InvalidKey: return "ERROR invalid_key";
+        case EnNvsResult::NotFound: return "ERROR key_not_found";
+        case EnNvsResult::InvalidType: return "ERROR invalid_type";
+        case EnNvsResult::TypeMetadataNotFound: return "ERROR type_metadata_not_found";
+        case EnNvsResult::TypeMismatch: return "ERROR type_mismatch";
+        case EnNvsResult::InvalidBoolean: return "ERROR invalid_boolean";
+        case EnNvsResult::ReadFailed: return "ERROR read_failed";
+        case EnNvsResult::MetadataSaveFailed: return "ERROR metadata_save_failed";
+        case EnNvsResult::RemoveFailed: return "ERROR remove_failed";
+        case EnNvsResult::ClearFailed: return "ERROR clear_failed";
+        case EnNvsResult::ListFailed: return "ERROR list_failed";
+        case EnNvsResult::InvalidValue: return "ERROR invalid_value";
+            default: return "ERROR save_failed";
+        }
+    }
+
+    /**
+     * @brief NVS処理結果を`ERROR `を含まないエラー名へ変換します。
+     *
+     * @param result NVS処理結果
+     * @return エラー名
+     */
+    const char* GetErrorName(EnNvsResult result)
+    {
+        constexpr size_t ErrorPrefixLength = 6;
+        return GetErrorText(result) + ErrorPrefixLength;
+    }
 }
 
-/**
- * @brief 指定されたNVS名前空間を使用するコマンド群を生成します。
- *
- * @param namespaceName 使用する値保存用NVS名前空間
- * @param metadataNamespaceName 使用する型情報保存用NVS名前空間
- */
-PreferenceCommands::PreferenceCommands(
-    const char* namespaceName,
-    const char* metadataNamespaceName)
-    : m_namespace(namespaceName == nullptr ? "" : namespaceName),
-      m_metadataNamespace(
-          metadataNamespaceName == nullptr ? "" : metadataNamespaceName),
+PreferenceCommands::PreferenceCommands(NvsPreferenceStore& store)
+    : m_store(store),
       m_commands(
           {
               {"pref", "Read and write NVS preferences", CommandPreference, this},
@@ -258,71 +159,11 @@ PreferenceCommands::PreferenceCommands(
 {
 }
 
-/**
- * @brief Preferencesの使用を終了します。
- */
-PreferenceCommands::~PreferenceCommands()
-{
-    if (m_started)
-    {
-        m_preferences.end();
-        m_metadataPreferences.end();
-    }
-}
-
-/**
- * @brief NVS名前空間を読み書き可能な状態で開きます。
- *
- * @return 名前空間を開けた場合はtrue、それ以外はfalse
- */
-bool PreferenceCommands::Begin()
-{
-    if (m_started)
-    {
-        return true;
-    }
-
-    if (m_namespace.empty() ||
-        m_namespace.length() > MaxNvsNameLength ||
-        m_metadataNamespace.empty() ||
-        m_metadataNamespace.length() > MaxNvsNameLength)
-    {
-        return false;
-    }
-
-    if (!m_preferences.begin(m_namespace.c_str(), false))
-    {
-        return false;
-    }
-
-    if (!m_metadataPreferences.begin(m_metadataNamespace.c_str(), false))
-    {
-        m_preferences.end();
-        return false;
-    }
-
-    m_started = true;
-    return m_started;
-}
-
-/**
- * @brief NT-Shellへ登録するコマンド一覧を取得します。
- *
- * @return NT-Shellコマンド一覧
- */
 const std::vector<NtShell::Command>& PreferenceCommands::GetCommands() const
 {
     return m_commands;
 }
 
-/**
- * @brief NT-Shellのコールバックを対象インスタンスへ転送します。
- *
- * @param output コマンド結果の出力先
- * @param argc コマンド名を含む引数の個数
- * @param argv コマンド名を先頭に格納した引数配列
- * @param context PreferenceCommandsインスタンス
- */
 void PreferenceCommands::CommandPreference(
     Stream& output,
     int argc,
@@ -333,13 +174,50 @@ void PreferenceCommands::CommandPreference(
     self->Execute(output, argc, argv);
 }
 
-/**
- * @brief prefコマンドのサブコマンドを解析して実行します。
- *
- * @param output コマンド結果の出力先
- * @param argc コマンド名を含む引数の個数
- * @param argv コマンド名を先頭に格納した引数配列
- */
+void PreferenceCommands::VisitListEntry(const NvsEntryInfo& entry, void* context)
+{
+    auto* listContext = static_cast<ListContext*>(context);
+    if (entry.m_result == EnNvsResult::Ok)
+    {
+        const EnNvsResult result = listContext->m_commands->WriteListValue(
+            *listContext->m_output,
+            entry);
+        if (result == EnNvsResult::Ok)
+        {
+            ++listContext->m_outputItemCount;
+            return;
+        }
+
+        ++listContext->m_valueErrorCount;
+        String line("ERROR ");
+        line += entry.m_key;
+        line += ' ';
+        line += GetErrorName(result);
+        WriteLine(*listContext->m_output, line);
+        return;
+    }
+
+    String line("ERROR ");
+    line += entry.m_key;
+    if (entry.m_result == EnNvsResult::TypeMetadataNotFound)
+    {
+        line += " type_metadata_not_found";
+    }
+    else if (entry.m_result == EnNvsResult::InvalidBoolean)
+    {
+        line += " invalid_boolean";
+    }
+    else if (entry.m_result == EnNvsResult::ReadFailed)
+    {
+        line += " read_failed";
+    }
+    else
+    {
+        line += " invalid_type_metadata";
+    }
+    WriteLine(*listContext->m_output, line);
+}
+
 void PreferenceCommands::Execute(Stream& output, int argc, char* argv[])
 {
     if (argc < 2 || strcmp(argv[1], "help") == 0)
@@ -347,18 +225,21 @@ void PreferenceCommands::Execute(Stream& output, int argc, char* argv[])
         PrintHelp(output);
         return;
     }
-
-    if (!EnsureStarted(output))
-    {
-        return;
-    }
+    if (!EnsureStarted(output)) return;
 
     if (strcmp(argv[1], "status") == 0 && argc == 2)
     {
+        size_t freeEntries = 0;
+        const EnNvsResult result = m_store.GetFreeEntries(freeEntries);
+        if (result != EnNvsResult::Ok)
+        {
+            WriteLine(output, GetErrorText(result));
+            return;
+        }
         String response("OK namespace=");
-        response += m_namespace.c_str();
+        response += m_store.GetNamespaceName();
         response += " free_entries=";
-        response += m_preferences.freeEntries();
+        response += freeEntries;
         WriteLine(output, response);
         return;
     }
@@ -371,35 +252,30 @@ void PreferenceCommands::Execute(Stream& output, int argc, char* argv[])
 
     if (strcmp(argv[1], "exists") == 0 && argc == 3)
     {
-        if (!ValidateKey(output, argv[2]))
+        if (!ValidateKey(output, argv[2])) return;
+        bool exists = false;
+        const EnNvsResult result = m_store.Exists(argv[2], exists);
+        if (result != EnNvsResult::Ok)
         {
+            WriteLine(output, GetErrorText(result));
             return;
         }
-
         String response("OK ");
         response += argv[2];
-        response += ' ';
-        response += m_preferences.isKey(argv[2]) ? "true" : "false";
+        response += exists ? " true" : " false";
         WriteLine(output, response);
         return;
     }
 
     if (strcmp(argv[1], "get") == 0 && argc == 4)
     {
-        if (ValidateKey(output, argv[3]))
-        {
-            GetValue(output, argv[2], argv[3]);
-        }
+        if (ValidateKey(output, argv[3])) GetValue(output, argv[2], argv[3]);
         return;
     }
 
     if (strcmp(argv[1], "set") == 0 && argc >= 5)
     {
-        if (!ValidateKey(output, argv[3]))
-        {
-            return;
-        }
-
+        if (!ValidateKey(output, argv[3])) return;
         String value(argv[4]);
         for (int index = 5; index < argc; ++index)
         {
@@ -412,32 +288,21 @@ void PreferenceCommands::Execute(Stream& output, int argc, char* argv[])
 
     if (strcmp(argv[1], "remove") == 0 && argc == 3)
     {
-        if (!ValidateKey(output, argv[2]))
-        {
-            return;
-        }
-
-        const bool valueRemoved = m_preferences.remove(argv[2]);
-        const bool metadataRemoved =
-            !m_metadataPreferences.isKey(argv[2]) ||
-            m_metadataPreferences.remove(argv[2]);
-        WriteLine(
-            output,
-            valueRemoved && metadataRemoved
-                ? "OK removed"
-                : "ERROR remove_failed");
+        if (!ValidateKey(output, argv[2])) return;
+        const EnNvsResult result = m_store.Remove(argv[2]);
+        WriteLine(output, result == EnNvsResult::Ok
+            ? "OK removed"
+            : "ERROR remove_failed");
         return;
     }
 
-    if (strcmp(argv[1], "clear") == 0 && argc == 3 && strcmp(argv[2], "YES") == 0)
+    if (strcmp(argv[1], "clear") == 0 && argc == 3 &&
+        strcmp(argv[2], "YES") == 0)
     {
-        const bool valuesCleared = m_preferences.clear();
-        const bool metadataCleared = m_metadataPreferences.clear();
-        WriteLine(
-            output,
-            valuesCleared && metadataCleared
-                ? "OK cleared"
-                : "ERROR clear_failed");
+        const EnNvsResult result = m_store.Clear();
+        WriteLine(output, result == EnNvsResult::Ok
+            ? "OK cleared"
+            : GetErrorText(result));
         return;
     }
 
@@ -445,73 +310,16 @@ void PreferenceCommands::Execute(Stream& output, int argc, char* argv[])
     PrintHelp(output);
 }
 
-/**
- * @brief 指定された型で設定値を読み出して表示します。
- *
- * @param output コマンド結果の出力先
- * @param typeName 読み出す値の型名
- * @param key 読み出すキー
- */
 void PreferenceCommands::GetValue(
     Stream& output,
     const char* typeName,
     const char* key)
 {
-    if (!m_preferences.isKey(key))
+    EnNvsValueType type = EnNvsValueType::Unknown;
+    EnNvsResult result = NvsPreferenceStore::ParseValueType(typeName, type);
+    if (result != EnNvsResult::Ok)
     {
-        WriteLine(output, "ERROR key_not_found");
-        return;
-    }
-
-    const PreferenceType storedType = m_preferences.getType(key);
-    const EnStoredType requestedType = ParseStoredType(typeName);
-    const EnStoredType metadataType = GetStoredType(m_metadataPreferences, key);
-
-    if (requestedType == EnStoredType::Unknown)
-    {
-        WriteLine(output, "ERROR invalid_type");
-        return;
-    }
-
-    if (metadataType == EnStoredType::Unknown)
-    {
-        WriteLine(output, "ERROR type_metadata_not_found");
-        return;
-    }
-
-    if (metadataType != requestedType)
-    {
-        WriteLine(output, "ERROR type_mismatch");
-        return;
-    }
-
-    const bool isCompatibleType =
-        (strcmp(typeName, "bool") == 0 && storedType == PT_U8) ||
-        (strcmp(typeName, "i8") == 0 && storedType == PT_I8) ||
-        (strcmp(typeName, "u8") == 0 && storedType == PT_U8) ||
-        (strcmp(typeName, "i16") == 0 && storedType == PT_I16) ||
-        (strcmp(typeName, "u16") == 0 && storedType == PT_U16) ||
-        (strcmp(typeName, "i32") == 0 && storedType == PT_I32) ||
-        (strcmp(typeName, "u32") == 0 && storedType == PT_U32) ||
-        (strcmp(typeName, "i64") == 0 && storedType == PT_I64) ||
-        (strcmp(typeName, "u64") == 0 && storedType == PT_U64) ||
-        (strcmp(typeName, "float") == 0 &&
-         storedType == PT_BLOB &&
-         m_preferences.getBytesLength(key) == sizeof(float_t)) ||
-        (strcmp(typeName, "double") == 0 &&
-         storedType == PT_BLOB &&
-         m_preferences.getBytesLength(key) == sizeof(double_t)) ||
-        (strcmp(typeName, "string") == 0 && storedType == PT_STR);
-
-    if (!isCompatibleType)
-    {
-        WriteLine(output, "ERROR type_mismatch");
-        return;
-    }
-
-    if (strcmp(typeName, "bool") == 0 && m_preferences.getUChar(key) > 1)
-    {
-        WriteLine(output, "ERROR invalid_boolean");
+        WriteLine(output, GetErrorText(result));
         return;
     }
 
@@ -521,316 +329,287 @@ void PreferenceCommands::GetValue(
     response += typeName;
     response += ' ';
 
-    if (strcmp(typeName, "bool") == 0)
+    bool boolValue = false;
+    int8_t i8Value = 0;
+    uint8_t u8Value = 0;
+    int16_t i16Value = 0;
+    uint16_t u16Value = 0;
+    int32_t i32Value = 0;
+    uint32_t u32Value = 0;
+    int64_t i64Value = 0;
+    uint64_t u64Value = 0;
+    float floatValue = 0.0F;
+    double doubleValue = 0.0;
+    String stringValue;
+
+    switch (type)
     {
-        response += m_preferences.getBool(key) ? "true" : "false";
-    }
-    else if (strcmp(typeName, "i8") == 0)
-    {
-        AppendSigned(response, m_preferences.getChar(key));
-    }
-    else if (strcmp(typeName, "u8") == 0)
-    {
-        AppendUnsigned(response, m_preferences.getUChar(key));
-    }
-    else if (strcmp(typeName, "i16") == 0)
-    {
-        AppendSigned(response, m_preferences.getShort(key));
-    }
-    else if (strcmp(typeName, "u16") == 0)
-    {
-        AppendUnsigned(response, m_preferences.getUShort(key));
-    }
-    else if (strcmp(typeName, "i32") == 0)
-    {
-        AppendSigned(response, m_preferences.getInt(key));
-    }
-    else if (strcmp(typeName, "u32") == 0)
-    {
-        AppendUnsigned(response, m_preferences.getUInt(key));
-    }
-    else if (strcmp(typeName, "i64") == 0)
-    {
-        AppendSigned(response, m_preferences.getLong64(key));
-    }
-    else if (strcmp(typeName, "u64") == 0)
-    {
-        AppendUnsigned(response, m_preferences.getULong64(key));
-    }
-    else if (strcmp(typeName, "float") == 0)
-    {
-        response += String(m_preferences.getFloat(key), 6);
-    }
-    else if (strcmp(typeName, "double") == 0)
-    {
-        response += String(m_preferences.getDouble(key), 10);
-    }
-    else if (strcmp(typeName, "string") == 0)
-    {
-        response += m_preferences.getString(key);
+    case EnNvsValueType::Bool:
+        result = m_store.GetBool(key, boolValue);
+        if (result == EnNvsResult::Ok) response += boolValue ? "true" : "false";
+        break;
+    case EnNvsValueType::I8:
+        result = m_store.GetI8(key, i8Value);
+        if (result == EnNvsResult::Ok) AppendSigned(response, i8Value);
+        break;
+    case EnNvsValueType::U8:
+        result = m_store.GetU8(key, u8Value);
+        if (result == EnNvsResult::Ok) AppendUnsigned(response, u8Value);
+        break;
+    case EnNvsValueType::I16:
+        result = m_store.GetI16(key, i16Value);
+        if (result == EnNvsResult::Ok) AppendSigned(response, i16Value);
+        break;
+    case EnNvsValueType::U16:
+        result = m_store.GetU16(key, u16Value);
+        if (result == EnNvsResult::Ok) AppendUnsigned(response, u16Value);
+        break;
+    case EnNvsValueType::I32:
+        result = m_store.GetI32(key, i32Value);
+        if (result == EnNvsResult::Ok) AppendSigned(response, i32Value);
+        break;
+    case EnNvsValueType::U32:
+        result = m_store.GetU32(key, u32Value);
+        if (result == EnNvsResult::Ok) AppendUnsigned(response, u32Value);
+        break;
+    case EnNvsValueType::I64:
+        result = m_store.GetI64(key, i64Value);
+        if (result == EnNvsResult::Ok) AppendSigned(response, i64Value);
+        break;
+    case EnNvsValueType::U64:
+        result = m_store.GetU64(key, u64Value);
+        if (result == EnNvsResult::Ok) AppendUnsigned(response, u64Value);
+        break;
+    case EnNvsValueType::Float:
+        result = m_store.GetFloat(key, floatValue);
+        if (result == EnNvsResult::Ok) response += String(floatValue, 6);
+        break;
+    case EnNvsValueType::Double:
+        result = m_store.GetDouble(key, doubleValue);
+        if (result == EnNvsResult::Ok) response += String(doubleValue, 10);
+        break;
+    case EnNvsValueType::String:
+        result = m_store.GetString(key, stringValue);
+        if (result == EnNvsResult::Ok) response += stringValue;
+        break;
+    default:
+        result = EnNvsResult::InvalidType;
+        break;
     }
 
-    WriteLine(output, response);
+    WriteLine(output, result == EnNvsResult::Ok ? response : GetErrorText(result));
 }
 
-/**
- * @brief 指定された型で設定値を保存します。
- *
- * @param output コマンド結果の出力先
- * @param typeName 保存する値の型名
- * @param key 保存するキー
- * @param value 保存する文字列表現
- */
 void PreferenceCommands::SetValue(
     Stream& output,
     const char* typeName,
     const char* key,
     const String& value)
 {
-    size_t writtenSize = 0;
-    const EnStoredType storedType = ParseStoredType(typeName);
-    int64_t signedValue = 0;
-    uint64_t unsignedValue = 0;
-    double floatingPointValue = 0.0;
-
-    if (strcmp(typeName, "bool") == 0)
-    {
-        if (value == "true" || value == "1")
-        {
-            writtenSize = m_preferences.putBool(key, true);
-        }
-        else if (value == "false" || value == "0")
-        {
-            writtenSize = m_preferences.putBool(key, false);
-        }
-        else
-        {
-            WriteLine(output, "ERROR invalid_value");
-            return;
-        }
-    }
-    else if (strcmp(typeName, "i8") == 0 &&
-             ParseSigned(value.c_str(), signedValue) &&
-             signedValue >= INT8_MIN &&
-             signedValue <= INT8_MAX)
-    {
-        writtenSize = m_preferences.putChar(key, static_cast<int8_t>(signedValue));
-    }
-    else if (strcmp(typeName, "u8") == 0 &&
-             ParseUnsigned(value.c_str(), unsignedValue) &&
-             unsignedValue <= UINT8_MAX)
-    {
-        writtenSize = m_preferences.putUChar(key, static_cast<uint8_t>(unsignedValue));
-    }
-    else if (strcmp(typeName, "i16") == 0 &&
-             ParseSigned(value.c_str(), signedValue) &&
-             signedValue >= INT16_MIN &&
-             signedValue <= INT16_MAX)
-    {
-        writtenSize = m_preferences.putShort(key, static_cast<int16_t>(signedValue));
-    }
-    else if (strcmp(typeName, "u16") == 0 &&
-             ParseUnsigned(value.c_str(), unsignedValue) &&
-             unsignedValue <= UINT16_MAX)
-    {
-        writtenSize = m_preferences.putUShort(key, static_cast<uint16_t>(unsignedValue));
-    }
-    else if (strcmp(typeName, "i32") == 0 &&
-             ParseSigned(value.c_str(), signedValue) &&
-             signedValue >= INT32_MIN &&
-             signedValue <= INT32_MAX)
-    {
-        writtenSize = m_preferences.putInt(key, static_cast<int32_t>(signedValue));
-    }
-    else if (strcmp(typeName, "u32") == 0 &&
-             ParseUnsigned(value.c_str(), unsignedValue) &&
-             unsignedValue <= UINT32_MAX)
-    {
-        writtenSize = m_preferences.putUInt(key, static_cast<uint32_t>(unsignedValue));
-    }
-    else if (strcmp(typeName, "i64") == 0 && ParseSigned(value.c_str(), signedValue))
-    {
-        writtenSize = m_preferences.putLong64(key, signedValue);
-    }
-    else if (strcmp(typeName, "u64") == 0 && ParseUnsigned(value.c_str(), unsignedValue))
-    {
-        writtenSize = m_preferences.putULong64(key, unsignedValue);
-    }
-    else if (strcmp(typeName, "float") == 0 &&
-             ParseFloatingPoint(value.c_str(), floatingPointValue) &&
-             floatingPointValue >= -FLT_MAX &&
-             floatingPointValue <= FLT_MAX)
-    {
-        writtenSize = m_preferences.putFloat(key, static_cast<float>(floatingPointValue));
-    }
-    else if (strcmp(typeName, "double") == 0 &&
-             ParseFloatingPoint(value.c_str(), floatingPointValue))
-    {
-        writtenSize = m_preferences.putDouble(key, floatingPointValue);
-    }
-    else if (strcmp(typeName, "string") == 0)
-    {
-        writtenSize = m_preferences.putString(key, value);
-    }
-    else
+    EnNvsValueType type = EnNvsValueType::Unknown;
+    EnNvsResult result = NvsPreferenceStore::ParseValueType(typeName, type);
+    if (result != EnNvsResult::Ok)
     {
         WriteLine(output, "ERROR invalid_type_or_value");
         return;
     }
 
-    if (writtenSize == 0)
+    int64_t signedValue = 0;
+    uint64_t unsignedValue = 0;
+    double floatingPointValue = 0.0;
+    switch (type)
     {
-        WriteLine(output, "ERROR save_failed");
-        return;
-    }
-
-    const size_t metadataSize = m_metadataPreferences.putUChar(
-        key,
-        static_cast<uint8_t>(storedType));
-    if (metadataSize == 0)
-    {
-        m_preferences.remove(key);
-        WriteLine(output, "ERROR metadata_save_failed");
-        return;
-    }
-
-    WriteLine(output, "OK saved");
-}
-
-/**
- * @brief 現在のNVS名前空間に保存されている設定値を一覧表示します。
- *
- * @param output コマンド結果の出力先
- */
-void PreferenceCommands::ListValues(Stream& output)
-{
-    size_t itemCount = 0;
-    size_t errorCount = 0;
-    nvs_iterator_t iterator = nvs_entry_find(
-        "nvs",
-        m_namespace.c_str(),
-        NVS_TYPE_ANY);
-
-    while (iterator != nullptr)
-    {
-        nvs_entry_info_t info{};
-        nvs_entry_info(iterator, &info);
-        const EnStoredType storedType = GetStoredType(
-            m_metadataPreferences,
-            info.key);
-
-        const bool metadataMatchesValue =
-            (storedType == EnStoredType::Bool && info.type == NVS_TYPE_U8) ||
-            (storedType == EnStoredType::I8 && info.type == NVS_TYPE_I8) ||
-            (storedType == EnStoredType::U8 && info.type == NVS_TYPE_U8) ||
-            (storedType == EnStoredType::I16 && info.type == NVS_TYPE_I16) ||
-            (storedType == EnStoredType::U16 && info.type == NVS_TYPE_U16) ||
-            (storedType == EnStoredType::I32 && info.type == NVS_TYPE_I32) ||
-            (storedType == EnStoredType::U32 && info.type == NVS_TYPE_U32) ||
-            (storedType == EnStoredType::I64 && info.type == NVS_TYPE_I64) ||
-            (storedType == EnStoredType::U64 && info.type == NVS_TYPE_U64) ||
-            (storedType == EnStoredType::Float &&
-             info.type == NVS_TYPE_BLOB &&
-             m_preferences.getBytesLength(info.key) == sizeof(float_t)) ||
-            (storedType == EnStoredType::Double &&
-             info.type == NVS_TYPE_BLOB &&
-             m_preferences.getBytesLength(info.key) == sizeof(double_t)) ||
-            (storedType == EnStoredType::String && info.type == NVS_TYPE_STR);
-
-        if (storedType == EnStoredType::Unknown)
-        {
-            String line("ERROR ");
-            line += info.key;
-            line += " type_metadata_not_found";
-            WriteLine(output, line);
-            ++errorCount;
-        }
-        else if (!metadataMatchesValue)
-        {
-            String line("ERROR ");
-            line += info.key;
-            line += " invalid_type_metadata";
-            WriteLine(output, line);
-            ++errorCount;
-        }
-        else if (storedType == EnStoredType::Bool &&
-                 m_preferences.getUChar(info.key) > 1)
-        {
-            String line("ERROR ");
-            line += info.key;
-            line += " invalid_boolean";
-            WriteLine(output, line);
-            ++errorCount;
-        }
+    case EnNvsValueType::Bool:
+        if (value == "true" || value == "1") result = m_store.SetBool(key, true);
+        else if (value == "false" || value == "0") result = m_store.SetBool(key, false);
         else
         {
-            String line("ITEM ");
-            line += info.key;
-            line += ' ';
-            line += GetStoredTypeName(storedType);
-            line += ' ';
-
-            switch (storedType)
-            {
-            case EnStoredType::Bool:
-                line += m_preferences.getBool(info.key) ? "true" : "false";
-                break;
-            case EnStoredType::I8:
-                AppendSigned(line, m_preferences.getChar(info.key));
-                break;
-            case EnStoredType::I16:
-                AppendSigned(line, m_preferences.getShort(info.key));
-                break;
-            case EnStoredType::I32:
-                AppendSigned(line, m_preferences.getInt(info.key));
-                break;
-            case EnStoredType::I64:
-                AppendSigned(line, m_preferences.getLong64(info.key));
-                break;
-            case EnStoredType::U8:
-                AppendUnsigned(line, m_preferences.getUChar(info.key));
-                break;
-            case EnStoredType::U16:
-                AppendUnsigned(line, m_preferences.getUShort(info.key));
-                break;
-            case EnStoredType::U32:
-                AppendUnsigned(line, m_preferences.getUInt(info.key));
-                break;
-            case EnStoredType::U64:
-                AppendUnsigned(line, m_preferences.getULong64(info.key));
-                break;
-            case EnStoredType::Float:
-                line += String(m_preferences.getFloat(info.key), 6);
-                break;
-            case EnStoredType::Double:
-                line += String(m_preferences.getDouble(info.key), 10);
-                break;
-            case EnStoredType::String:
-                line += m_preferences.getString(info.key);
-                break;
-            default:
-                break;
-            }
-
-            WriteLine(output, line);
-            ++itemCount;
+            WriteLine(output, "ERROR invalid_value");
+            return;
         }
-
-        iterator = nvs_entry_next(iterator);
+        break;
+    case EnNvsValueType::I8:
+        result = ParseSigned(value.c_str(), signedValue) &&
+            signedValue >= INT8_MIN && signedValue <= INT8_MAX
+            ? m_store.SetI8(key, static_cast<int8_t>(signedValue))
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::U8:
+        result = ParseUnsigned(value.c_str(), unsignedValue) && unsignedValue <= UINT8_MAX
+            ? m_store.SetU8(key, static_cast<uint8_t>(unsignedValue))
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::I16:
+        result = ParseSigned(value.c_str(), signedValue) &&
+            signedValue >= INT16_MIN && signedValue <= INT16_MAX
+            ? m_store.SetI16(key, static_cast<int16_t>(signedValue))
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::U16:
+        result = ParseUnsigned(value.c_str(), unsignedValue) && unsignedValue <= UINT16_MAX
+            ? m_store.SetU16(key, static_cast<uint16_t>(unsignedValue))
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::I32:
+        result = ParseSigned(value.c_str(), signedValue) &&
+            signedValue >= INT32_MIN && signedValue <= INT32_MAX
+            ? m_store.SetI32(key, static_cast<int32_t>(signedValue))
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::U32:
+        result = ParseUnsigned(value.c_str(), unsignedValue) && unsignedValue <= UINT32_MAX
+            ? m_store.SetU32(key, static_cast<uint32_t>(unsignedValue))
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::I64:
+        result = ParseSigned(value.c_str(), signedValue)
+            ? m_store.SetI64(key, signedValue)
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::U64:
+        result = ParseUnsigned(value.c_str(), unsignedValue)
+            ? m_store.SetU64(key, unsignedValue)
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::Float:
+        result = ParseFloatingPoint(value.c_str(), floatingPointValue) &&
+            floatingPointValue >= -FLT_MAX && floatingPointValue <= FLT_MAX
+            ? m_store.SetFloat(key, static_cast<float>(floatingPointValue))
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::Double:
+        result = ParseFloatingPoint(value.c_str(), floatingPointValue)
+            ? m_store.SetDouble(key, floatingPointValue)
+            : EnNvsResult::InvalidValue;
+        break;
+    case EnNvsValueType::String:
+        result = m_store.SetString(key, value);
+        break;
+    default:
+        result = EnNvsResult::InvalidValue;
+        break;
     }
 
-    String summary(errorCount == 0 ? "OK count=" : "ERROR count=");
-    summary += itemCount;
+    if (result == EnNvsResult::Ok) WriteLine(output, "OK saved");
+    else if (result == EnNvsResult::InvalidValue) WriteLine(output, "ERROR invalid_type_or_value");
+    else WriteLine(output, GetErrorText(result));
+}
+
+void PreferenceCommands::ListValues(Stream& output)
+{
+    ListContext context{&output, this, 0, 0};
+    size_t itemCount = 0;
+    size_t errorCount = 0;
+    const EnNvsResult result = m_store.List(
+        VisitListEntry,
+        &context,
+        itemCount,
+        errorCount);
+    if (result != EnNvsResult::Ok)
+    {
+        WriteLine(output, GetErrorText(result));
+        return;
+    }
+
+    const bool countsMatch = itemCount ==
+        context.m_outputItemCount + context.m_valueErrorCount;
+    const bool hasError = errorCount != 0 ||
+        context.m_valueErrorCount != 0 ||
+        !countsMatch;
+    String summary(hasError ? "ERROR count=" : "OK count=");
+    summary += context.m_outputItemCount;
     summary += " metadata_errors=";
     summary += errorCount;
+    summary += " read_errors=";
+    summary += context.m_valueErrorCount;
     WriteLine(output, summary);
 }
 
-/**
- * @brief コマンドの使用方法を表示します。
- *
- * @param output コマンド結果の出力先
- */
+EnNvsResult PreferenceCommands::WriteListValue(
+    Stream& output,
+    const NvsEntryInfo& entry)
+{
+    String line("ITEM ");
+    line += entry.m_key;
+    line += ' ';
+    line += NvsPreferenceStore::GetValueTypeName(entry.m_type);
+    line += ' ';
+
+    bool boolValue = false;
+    int8_t i8Value = 0;
+    uint8_t u8Value = 0;
+    int16_t i16Value = 0;
+    uint16_t u16Value = 0;
+    int32_t i32Value = 0;
+    uint32_t u32Value = 0;
+    int64_t i64Value = 0;
+    uint64_t u64Value = 0;
+    float floatValue = 0.0F;
+    double doubleValue = 0.0;
+    String stringValue;
+    EnNvsResult result = EnNvsResult::InvalidType;
+
+    switch (entry.m_type)
+    {
+    case EnNvsValueType::Bool:
+        result = m_store.GetBool(entry.m_key, boolValue);
+        if (result == EnNvsResult::Ok)
+        {
+            line += boolValue ? "true" : "false";
+        }
+        break;
+    case EnNvsValueType::I8:
+        result = m_store.GetI8(entry.m_key, i8Value);
+        if (result == EnNvsResult::Ok) AppendSigned(line, i8Value);
+        break;
+    case EnNvsValueType::U8:
+        result = m_store.GetU8(entry.m_key, u8Value);
+        if (result == EnNvsResult::Ok) AppendUnsigned(line, u8Value);
+        break;
+    case EnNvsValueType::I16:
+        result = m_store.GetI16(entry.m_key, i16Value);
+        if (result == EnNvsResult::Ok) AppendSigned(line, i16Value);
+        break;
+    case EnNvsValueType::U16:
+        result = m_store.GetU16(entry.m_key, u16Value);
+        if (result == EnNvsResult::Ok) AppendUnsigned(line, u16Value);
+        break;
+    case EnNvsValueType::I32:
+        result = m_store.GetI32(entry.m_key, i32Value);
+        if (result == EnNvsResult::Ok) AppendSigned(line, i32Value);
+        break;
+    case EnNvsValueType::U32:
+        result = m_store.GetU32(entry.m_key, u32Value);
+        if (result == EnNvsResult::Ok) AppendUnsigned(line, u32Value);
+        break;
+    case EnNvsValueType::I64:
+        result = m_store.GetI64(entry.m_key, i64Value);
+        if (result == EnNvsResult::Ok) AppendSigned(line, i64Value);
+        break;
+    case EnNvsValueType::U64:
+        result = m_store.GetU64(entry.m_key, u64Value);
+        if (result == EnNvsResult::Ok) AppendUnsigned(line, u64Value);
+        break;
+    case EnNvsValueType::Float:
+        result = m_store.GetFloat(entry.m_key, floatValue);
+        if (result == EnNvsResult::Ok) line += String(floatValue, 6);
+        break;
+    case EnNvsValueType::Double:
+        result = m_store.GetDouble(entry.m_key, doubleValue);
+        if (result == EnNvsResult::Ok) line += String(doubleValue, 10);
+        break;
+    case EnNvsValueType::String:
+        result = m_store.GetString(entry.m_key, stringValue);
+        if (result == EnNvsResult::Ok) line += stringValue;
+        break;
+    default:
+        return EnNvsResult::InvalidType;
+    }
+    if (result != EnNvsResult::Ok) return result;
+    WriteLine(output, line);
+    return EnNvsResult::Ok;
+}
+
 void PreferenceCommands::PrintHelp(Stream& output) const
 {
     static const char HelpText[] =
@@ -845,37 +624,16 @@ void PreferenceCommands::PrintHelp(Stream& output) const
     output.print(HelpText);
 }
 
-/**
- * @brief Preferencesを利用できる状態か検査します。
- *
- * @param output エラーの出力先
- * @return 利用できる場合はtrue、それ以外はfalse
- */
 bool PreferenceCommands::EnsureStarted(Stream& output) const
 {
-    if (m_started)
-    {
-        return true;
-    }
-
+    if (m_store.IsStarted()) return true;
     WriteLine(output, "ERROR preferences_not_started");
     return false;
 }
 
-/**
- * @brief NVSキーが有効な長さか検査します。
- *
- * @param output エラーの出力先
- * @param key 検査するキー
- * @return 有効な場合はtrue、それ以外はfalse
- */
 bool PreferenceCommands::ValidateKey(Stream& output, const char* key) const
 {
-    if (key != nullptr && key[0] != '\0' && strlen(key) <= MaxNvsNameLength)
-    {
-        return true;
-    }
-
+    if (m_store.ValidateKey(key) == EnNvsResult::Ok) return true;
     WriteLine(output, "ERROR invalid_key");
     return false;
 }
