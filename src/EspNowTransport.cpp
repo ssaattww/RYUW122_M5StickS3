@@ -183,6 +183,29 @@ void EspNowTransport::Update()
     StartNextSend();
 }
 
+bool EspNowTransport::PeekReceive(EspNowReceivedPacket& packet)
+{
+    if (m_receivedQueue == nullptr)
+    {
+        return false;
+    }
+    return xQueuePeek(m_receivedQueue, &packet, 0) == pdTRUE;
+}
+
+bool EspNowTransport::ConsumeReceive()
+{
+    if (m_receivedQueue == nullptr)
+    {
+        return false;
+    }
+
+    EspNowReceivedPacket discardedPacket{};
+    return xQueueReceive(
+        m_receivedQueue,
+        &discardedPacket,
+        0) == pdTRUE;
+}
+
 bool EspNowTransport::TryReceive(EspNowReceivedPacket& packet)
 {
     if (m_receivedQueue == nullptr)

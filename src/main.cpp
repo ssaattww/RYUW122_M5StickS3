@@ -6,8 +6,10 @@
 #include "ConfigPreference.h"
 #include "ConfigRuntime.h"
 #include "EspNowBroadcast.h"
+#include "EspNowTransport.h"
 #include "NvsPreferenceStore.h"
 #include "Ryuw122Controller.h"
+#include "TagMasterCoordinator.h"
 
 namespace
 {
@@ -16,7 +18,9 @@ namespace
     PreferenceCommands preferenceCommands(preferenceStore);
     ConfigPreference configPreference(preferenceStore);
     ConfigRuntime configRuntime;
-    EspNowBroadcast espNowBroadcast(configRuntime);
+    EspNowTransport espNowTransport;
+    EspNowBroadcast espNowBroadcast(espNowTransport, configRuntime);
+    TagMasterCoordinator tagMasterCoordinator(espNowBroadcast);
     Ryuw122Controller ryuw122Controller(Serial1, configRuntime);
     M5Canvas canvas(&M5.Display);
 
@@ -127,7 +131,7 @@ namespace
 };
 
 /**
- * @brief M5Stack、Canvas、NT-Shell、ESP-NOWブロードキャストを初期化します。
+ * @brief M5Stack、Canvas、NT-Shell、ESP-NOW通信とマスター選出を初期化します。
  */
 void setup()
 {
@@ -145,7 +149,15 @@ void setup()
     configRuntime.Init(configPreference);
 
     const EnRyuw122InitResult ryuw122Result = ryuw122Controller.Begin();
-    const bool espNowStarted = espNowBroadcast.Begin();
+    const bool transportStarted = espNowTransport.Begin(
+        configRuntime.GetCurrentEspnowChannel(),
+        configRuntime.GetWifiPowerSave());
+    const bool espNowStarted =
+        transportStarted && espNowBroadcast.Begin();
+    if (espNowStarted)
+    {
+        tagMasterCoordinator.Begin(millis());
+    }
 
     canvas.fillSprite(TFT_BLACK);
     DrawStatus(
@@ -175,12 +187,12 @@ void setup()
 }
 
 /**
- * @brief M5Stackの入力とESP-NOW受信を処理し、変更したCanvasを実画面へ転送します。
+ * @brief 入力、ESP-NOW受信、マスター選出を処理して画面を更新します。
  */
 void loop()
 {
     M5.update();
-    bool canvasChanged = TryDrawReceivedNodeStatus();
+    bool canvasChanged = false;
     if (M5.BtnA.isPressed())
     {
         EnRunMode runmode = configRuntime.GetRunMode();
@@ -192,12 +204,18 @@ void loop()
         canvasChanged = true;
     }
 
+    espNowTransport.Update();
+    espNowBroadcast.Update();
+    tagMasterCoordinator.Update(millis());
+    espNowBroadcast.Update();
+
+    canvasChanged = TryDrawReceivedNodeStatus() || canvasChanged;
+
     if (canvasChanged)
     {
         canvas.pushSprite(0, 0);
     }
 
-    espNowBroadcast.Update();
     ryuw122Controller.Update();
 
     delay(1);

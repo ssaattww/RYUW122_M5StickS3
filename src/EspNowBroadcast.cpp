@@ -3,42 +3,62 @@
 #include <Arduino.h>
 #include <esp_wifi.h>
 
+#include <cstdio>
 #include <cstring>
 
 namespace
 {
     constexpr UBaseType_t ReceivedNodeStatusQueueLength = 16;
-    constexpr uint32_t StatusSendIntervalMs = 10000;
+    constexpr uint32_t StatusSendIntervalMs = 1000;
+    constexpr uint8_t BroadcastMac[6] = {
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+        0xff,
+    };
+
+    /**
+     * @brief MACアドレスが有効なユニキャスト送信元か確認します。
+     *
+     * @param macAddress 確認するMACアドレス
+     * @return ゼロまたはbroadcastアドレスでない場合はtrue、それ以外はfalse
+     */
+    bool IsValidSourceMac(const uint8_t macAddress[6])
+    {
+        bool allZero = true;
+        bool allBroadcast = true;
+        for (size_t index = 0; index < 6; ++index)
+        {
+            allZero = allZero && macAddress[index] == 0U;
+            allBroadcast = allBroadcast && macAddress[index] == 0xffU;
+        }
+        return !allZero && !allBroadcast;
+    }
+
+    /**
+     * @brief MACアドレスがbroadcast宛先か確認します。
+     *
+     * @param macAddress 確認するMACアドレス
+     * @return broadcastアドレスの場合はtrue、それ以外はfalse
+     */
+    bool IsBroadcastAddress(const uint8_t macAddress[6])
+    {
+        return memcmp(macAddress, BroadcastMac, sizeof(BroadcastMac)) == 0;
+    }
 }
 
-EspNowBroadcast* EspNowBroadcast::m_activeInstance = nullptr;
-
-/**
- * @brief 実行時設定を使用するブロードキャスト管理オブジェクトを生成します。
- *
- * @param configRuntime 送信する実行時設定
- */
-EspNowBroadcast::EspNowBroadcast(ConfigRuntime& configRuntime)
-    : m_configRuntime(configRuntime)
+EspNowBroadcast::EspNowBroadcast(
+    EspNowTransport& transport,
+    ConfigRuntime& configRuntime)
+    : m_transport(transport),
+      m_configRuntime(configRuntime)
 {
 }
 
-/**
- * @brief ESP-NOWと受信mailboxを終了します。
- */
 EspNowBroadcast::~EspNowBroadcast()
 {
-    if (m_activeInstance == this)
-    {
-        m_activeInstance = nullptr;
-    }
-
-    if (m_started)
-    {
-        m_espNowBus.end();
-        m_started = false;
-    }
-
     if (m_receivedNodeStatusQueue != nullptr)
     {
         vQueueDelete(m_receivedNodeStatusQueue);
@@ -46,18 +66,16 @@ EspNowBroadcast::~EspNowBroadcast()
     }
 }
 
-/**
- * @brief 受信mailboxとESP-NOWを初期化し、初回状態を送信します。
- *
- * @return 初期化できた場合はtrue、それ以外はfalse
- */
 bool EspNowBroadcast::Begin()
 {
     if (m_started)
     {
         return true;
     }
-
+    if (!m_transport.IsStarted())
+    {
+        return false;
+    }
     if (m_receivedNodeStatusQueue == nullptr)
     {
         m_receivedNodeStatusQueue = xQueueCreate(
@@ -68,164 +86,174 @@ bool EspNowBroadcast::Begin()
             return false;
         }
     }
-
-    EspNowBus::Config config;
-    config.groupName = "RYUW122";
-    config.channel = static_cast<int8_t>(
-        m_configRuntime.GetCurrentEspnowChannel());
-    config.autoJoinIntervalMs = 10000;
-
-    m_activeInstance = this;
-    m_espNowBus.onReceive(OnReceive);
-    if (!m_espNowBus.begin(config))
+    if (esp_wifi_get_mac(WIFI_IF_STA, m_localStatus.macAddress) != ESP_OK)
     {
-        m_activeInstance = nullptr;
         return false;
     }
 
-    if (esp_wifi_get_mac(WIFI_IF_STA, m_macAddress) != ESP_OK)
-    {
-        m_activeInstance = nullptr;
-        m_espNowBus.end();
-        return false;
-    }
-
+    RefreshLocalStatus();
     m_started = true;
-    m_lastStatusSendMs = millis() - StatusSendIntervalMs;
+    m_sendImmediately = true;
     SendNodeStatus();
     return true;
 }
 
-/**
- * @brief 自端末状態を設定周期でブロードキャスト送信します。
- */
 void EspNowBroadcast::Update()
 {
+    if (!m_started)
+    {
+        return;
+    }
+
+    EspNowReceivedPacket packet{};
+    while (m_transport.PeekReceive(packet))
+    {
+        if (!NodeStatusCodec::IsNodeStatusPacket(
+                packet.payload,
+                packet.payloadLength))
+        {
+            break;
+        }
+        if (!m_transport.ConsumeReceive())
+        {
+            break;
+        }
+        HandleReceivedPacket(packet);
+    }
+
+    if (RefreshLocalStatus())
+    {
+        m_sendImmediately = true;
+    }
     SendNodeStatus();
 }
 
-/**
- * @brief 受信mailboxから最新のノード状態を取得します。
- *
- * @param status 取得したノード状態の格納先
- * @return 受信状態を取得した場合はtrue、それ以外はfalse
- */
 bool EspNowBroadcast::TryReceive(NodeStatus& status)
 {
     if (m_receivedNodeStatusQueue == nullptr)
     {
         return false;
     }
-
-    NodeStatus receivedStatus{};
-    if (xQueueReceive(
-            m_receivedNodeStatusQueue,
-            &receivedStatus,
-            0) != pdTRUE)
-    {
-        return false;
-    }
-
-    const NodeAddress address{
-        receivedStatus.macAddress[0],
-        receivedStatus.macAddress[1],
-        receivedStatus.macAddress[2],
-        receivedStatus.macAddress[3],
-        receivedStatus.macAddress[4],
-        receivedStatus.macAddress[5],
-    };
-    m_nodes[address] = receivedStatus;
-    status = receivedStatus;
-    return true;
+    return xQueueReceive(
+        m_receivedNodeStatusQueue,
+        &status,
+        0) == pdTRUE;
 }
 
-/**
- * @brief 受信済みノード状態の一覧を取得します。
- *
- * @return MACアドレスをキーとする受信済みノード一覧
- */
 const EspNowBroadcast::NodeMap& EspNowBroadcast::GetNodes() const
 {
     return m_nodes;
 }
 
-/**
- * @brief ESP-NOWが開始済みか確認します。
- *
- * @return 開始済みの場合はtrue、それ以外はfalse
- */
+bool EspNowBroadcast::GetLastSeenMs(
+    const NodeAddress& address,
+    uint32_t& lastSeenMs) const
+{
+    const auto lastSeen = m_lastSeenByAddress.find(address);
+    if (lastSeen == m_lastSeenByAddress.end())
+    {
+        return false;
+    }
+    lastSeenMs = lastSeen->second;
+    return true;
+}
+
+const NodeStatus& EspNowBroadcast::GetLocalStatus() const
+{
+    return m_localStatus;
+}
+
+void EspNowBroadcast::SetMasterState(bool isMaster, uint32_t sessionId)
+{
+    if (!isMaster)
+    {
+        sessionId = 0;
+    }
+    if (m_localStatus.isMaster == isMaster &&
+        m_localStatus.sessionId == sessionId)
+    {
+        return;
+    }
+
+    m_localStatus.isMaster = isMaster;
+    m_localStatus.sessionId = sessionId;
+    m_sendImmediately = true;
+}
+
 bool EspNowBroadcast::IsStarted() const
 {
-    return m_started;
+    return m_started && m_transport.IsStarted();
 }
 
-/**
- * @brief ESP-NOW受信callbackを現在のインスタンスへ転送します。
- *
- * @param mac 送信元MACアドレス
- * @param data 受信payload
- * @param length 受信payloadサイズ
- * @param wasRetry 再送payloadの場合はtrue、それ以外はfalse
- * @param isBroadcast broadcast受信の場合はtrue、それ以外はfalse
- */
-void EspNowBroadcast::OnReceive(
-    const uint8_t* mac,
-    const uint8_t* data,
-    size_t length,
-    bool wasRetry,
-    bool isBroadcast)
+void EspNowBroadcast::HandleReceivedPacket(
+    const EspNowReceivedPacket& packet)
 {
-    static_cast<void>(mac);
-    static_cast<void>(wasRetry);
-
-    if (m_activeInstance != nullptr)
-    {
-        m_activeInstance->HandleReceive(
-            mac,
-            data,
-            length,
-            isBroadcast);
-    }
-}
-
-/**
- * @brief 有効なbroadcastノード状態を受信mailboxへ保存します。
- *
- * @param mac 送信元MACアドレス
- * @param data 受信payload
- * @param length 受信payloadサイズ
- * @param isBroadcast broadcast受信の場合はtrue、それ以外はfalse
- */
-void EspNowBroadcast::HandleReceive(
-    const uint8_t* mac,
-    const uint8_t* data,
-    size_t length,
-    bool isBroadcast)
-{
-    if (!isBroadcast ||
-        mac == nullptr ||
-        data == nullptr ||
-        length != sizeof(NodeStatus) ||
-        m_receivedNodeStatusQueue == nullptr)
+    if (!IsBroadcastAddress(packet.destinationMac) ||
+        !IsValidSourceMac(packet.sourceMac))
     {
         return;
     }
 
     NodeStatus status{};
-    memcpy(&status, data, sizeof(status));
-    if (status.mode != EnRunMode::Tag &&
-        status.mode != EnRunMode::Anchor)
+    if (!NodeStatusCodec::Decode(
+            packet.payload,
+            packet.payloadLength,
+            packet.sourceMac,
+            status))
     {
         return;
     }
 
-    memcpy(status.macAddress, mac, sizeof(status.macAddress));
+    const NodeAddress address{
+        packet.sourceMac[0],
+        packet.sourceMac[1],
+        packet.sourceMac[2],
+        packet.sourceMac[3],
+        packet.sourceMac[4],
+        packet.sourceMac[5],
+    };
+    m_nodes[address] = status;
+    m_lastSeenByAddress[address] = millis();
     xQueueSend(m_receivedNodeStatusQueue, &status, 0);
 }
 
-/**
- * @brief 現在の実行時設定をノード状態として送信します。
- */
+bool EspNowBroadcast::RefreshLocalStatus()
+{
+    NodeStatus refreshed = m_localStatus;
+    refreshed.anchorPositionX = m_configRuntime.GetAnchorPositionX();
+    refreshed.anchorPositionY = m_configRuntime.GetAnchorPositionY();
+    refreshed.nodeID = m_configRuntime.GetCurrentNodeID();
+    refreshed.mode = m_configRuntime.GetRunMode();
+    BuildUwbAddress(refreshed.uwbAddress);
+
+    if (refreshed.anchorPositionX == m_localStatus.anchorPositionX &&
+        refreshed.anchorPositionY == m_localStatus.anchorPositionY &&
+        refreshed.nodeID == m_localStatus.nodeID &&
+        refreshed.mode == m_localStatus.mode &&
+        memcmp(
+            refreshed.uwbAddress,
+            m_localStatus.uwbAddress,
+            sizeof(refreshed.uwbAddress)) == 0)
+    {
+        return false;
+    }
+
+    m_localStatus = refreshed;
+    return true;
+}
+
+void EspNowBroadcast::BuildUwbAddress(char address[9]) const
+{
+    const char rolePrefix =
+        m_configRuntime.GetRunMode() == EnRunMode::Tag ? 'T' : 'A';
+    snprintf(
+        address,
+        9,
+        "%c%07u",
+        rolePrefix,
+        static_cast<unsigned int>(m_configRuntime.GetCurrentNodeID()));
+}
+
 void EspNowBroadcast::SendNodeStatus()
 {
     if (!m_started)
@@ -233,30 +261,23 @@ void EspNowBroadcast::SendNodeStatus()
         return;
     }
 
-    const uint32_t now = millis();
-    if (now - m_lastStatusSendMs < StatusSendIntervalMs)
+    const uint32_t nowMs = millis();
+    if (!m_sendImmediately &&
+        nowMs - m_lastStatusSendMs < StatusSendIntervalMs)
     {
         return;
     }
 
-    const NodeStatus nodeStatus{
-        .anchorPositionX = m_configRuntime.GetAnchorPositionX(),
-        .anchorPositionY = m_configRuntime.GetAnchorPositionY(),
-        .macAddress = {
-            m_macAddress[0],
-            m_macAddress[1],
-            m_macAddress[2],
-            m_macAddress[3],
-            m_macAddress[4],
-            m_macAddress[5],
-        },
-        .nodeID = m_configRuntime.GetCurrentNodeID(),
-        .mode = m_configRuntime.GetRunMode(),
-    };
+    NodeStatusWirePacket packet{};
+    if (!NodeStatusCodec::Encode(m_localStatus, packet) ||
+        !m_transport.Send(
+            BroadcastMac,
+            reinterpret_cast<const uint8_t*>(&packet),
+            sizeof(packet)))
+    {
+        return;
+    }
 
-    m_espNowBus.broadcast(
-        &nodeStatus,
-        sizeof(nodeStatus),
-        0);
-    m_lastStatusSendMs = now;
+    m_lastStatusSendMs = nowMs;
+    m_sendImmediately = false;
 }

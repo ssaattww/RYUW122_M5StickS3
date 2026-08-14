@@ -2,14 +2,19 @@
 
 void ConfigRuntime::Init(ConfigPreference& configPreference)
 {
-    if (configPreference.GetRunMode(m_RunMode) != EnNvsResult::Ok)
+    if (configPreference.GetRunMode(m_runMode) != EnNvsResult::Ok)
     {
-        m_RunMode = ConfigPreferenceDefaults::m_defaultRunMode;
+        m_runMode = ConfigPreferenceDefaults::m_defaultRunMode;
     }
 
     if (configPreference.GetEspnowChannel(m_currentEspnowChannel) != EnNvsResult::Ok)
     {
         m_currentEspnowChannel = ConfigPreferenceDefaults::m_defaultEspnowChannel;
+    }
+
+    if (configPreference.GetWifiPowerSave(m_wifiPowerSave) != EnNvsResult::Ok)
+    {
+        m_wifiPowerSave = ConfigPreferenceDefaults::m_defaultWifiPowerSave;
     }
 
     if (configPreference.GetNodeID(m_currentNodeID) != EnNvsResult::Ok)
@@ -30,17 +35,22 @@ void ConfigRuntime::Init(ConfigPreference& configPreference)
 
 EnRunMode ConfigRuntime::GetRunMode()
 {
-    return m_RunMode;
+    return m_runMode;
 }
 
 void ConfigRuntime::SetRunMode(EnRunMode mode)
 {
-    m_RunMode = mode;
+    m_runMode = mode;
 }
 
 uint8_t ConfigRuntime::GetCurrentEspnowChannel()
 {
     return m_currentEspnowChannel;
+}
+
+bool ConfigRuntime::GetWifiPowerSave() const
+{
+    return m_wifiPowerSave;
 }
 
 void ConfigRuntime::SetCurrentEspnowChannel(uint8_t channel)

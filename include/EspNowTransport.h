@@ -131,6 +131,22 @@ public:
     void Update();
 
     /**
+     * @brief 受信queueの先頭packetを削除せずに取得します。
+     * 上位consumerはpacket種別を確認してからConsumeReceive()を呼び出します。
+     *
+     * @param packet 受信packetの格納先
+     * @return packetを取得した場合はtrue、それ以外はfalse
+     */
+    bool PeekReceive(EspNowReceivedPacket& packet);
+
+    /**
+     * @brief 受信queueの先頭packetを1件削除します。
+     *
+     * @return packetを削除した場合はtrue、それ以外はfalse
+     */
+    bool ConsumeReceive();
+
+    /**
      * @brief 受信queueからpacketを1件取得します。
      *
      * @param packet 受信packetの格納先

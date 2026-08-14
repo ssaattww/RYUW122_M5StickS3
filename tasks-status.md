@@ -13,13 +13,14 @@
 - enum class名は`En`で始め、クラス・関数名はUpperCamelCase、メンバー変数は`m_`に続くlowerCamelCaseとする。
 - 基本ファイル名は主要クラス名と一致させる。
 - 初期実装は正常系を優先し、アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧を実装しない。
+- ホストテストは`test/README`に従ってPlatformIO Test Runnerから実行し、PowerShellなど特定OS専用スクリプトへ依存させない。
 - 実装対象は`C:\Users\taiga\Documents\PlatformIO\Projects\RYUW122_M5StickS3`とし、`.pio/libdeps`は編集しない。
 
 ## 現在位置
 
-- 現在フェーズ: P2 ESP-NOW通信とマスター選出
-- 完了タスク: T-001, T-002
-- 次タスク: T-003 NodeStatus拡張とマスターTAG選出
+- 現在フェーズ: P3 時刻同期とUWB測距基盤
+- 完了タスク: T-001, T-002, T-003
+- 次タスク: T-004 NTP四時刻同期とマスター時刻変換
 - 次タスク状態: 未着手
 - ブランチ: `codex/multitag-sequential-ranging`
 
@@ -28,8 +29,8 @@
 | ID | フェーズ | タスク | 見積 | 依存 | 状態 | コミット |
 | --- | --- | --- | --- | --- | --- | --- |
 | T-001 | P1 | 設計確定とタスク分解 | M | なし | 完了 | `75bb8af` + 本追跡コミット |
-| T-002 | P2 | ESP-NOW transportとWi-Fi設定基盤 | L | T-001 | 完了 | 本タスクのコミット |
-| T-003 | P2 | NodeStatus拡張とマスターTAG選出 | M | T-002 | 未着手 | 未作成 |
+| T-002 | P2 | ESP-NOW transportとWi-Fi設定基盤 | L | T-001 | 完了 | `b2fbdc8` |
+| T-003 | P2 | NodeStatus拡張とマスターTAG選出 | M | T-002 | 完了 | 本タスクのコミット |
 | T-004 | P3 | NTP四時刻同期とマスター時刻変換 | L | T-003 | 未着手 | 未作成 |
 | T-005 | P3 | RYUW122非同期測距API | L | T-001 | 未着手 | 未作成 |
 | T-006 | P4 | 複数TAG測距プロトコルとcodec | M | T-003, T-004 | 未着手 | 未作成 |
@@ -125,6 +126,21 @@
 - 既存の受信ノード一覧表示が`m_nodes`の件数分動作する。
 - M5StickS3 buildと選出ロジックのホストテストが成功する。
 - T-003だけのコミットを作成する。
+
+通常レビューfinding:
+
+- T003-NR-001 Medium: `EspNowBroadcast`が共有受信FIFOの非NodeStatus packetを破棄しない配送境界へ修正する。
+- T003-NR-002 Medium: remote TAGをmaster宣言・非0 session受信前に有効masterとして公開しない。
+
+完了結果:
+
+- T003-NR-001 Medium、T003-NR-002 Mediumはいずれもresolved
+- PlatformIO native test 5/5成功
+- M5StickS3 clean/full build成功
+- RAM 50,056 / 327,680 bytes（15.3%）
+- Flash 1,210,243 / 3,342,336 bytes（36.2%）
+- fix verification`pass_with_held`、新規findingなし
+- 実機ESP-NOW、異種packet共存、複数実機マスター交代は後続へ保留
 
 ### T-004 NTP四時刻同期とマスター時刻変換
 
