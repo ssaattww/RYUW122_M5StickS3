@@ -27,6 +27,9 @@ public:
     static constexpr char m_espnowChannelKey[] = "espnow_channel";
     static constexpr uint8_t m_defaultEspnowChannel = 4;
 
+    static constexpr char m_wifiPowerSaveKey[] = "wifi_power_save";
+    static constexpr bool m_defaultWifiPowerSave = false;
+
     static constexpr char m_nodeIdKey[] = "node_id";
     static constexpr uint8_t m_defaultNodeId = 0;
 
@@ -90,6 +93,23 @@ public:
      * @return EnNvsResult 
      */
     EnNvsResult SetCurrentEspnowChannel(uint8_t channel);
+
+    /**
+     * @brief Wi-Fi省電力設定を取得します。
+     * 読み出しに失敗した場合はデフォルト値を設定して返します。
+     *
+     * @param wifiPowerSave Wi-Fi省電力設定の格納先
+     * @return NVS処理結果
+     */
+    EnNvsResult GetWifiPowerSave(bool& wifiPowerSave);
+
+    /**
+     * @brief Wi-Fi省電力設定を保存します。
+     *
+     * @param wifiPowerSave 保存するWi-Fi省電力設定
+     * @return NVS処理結果
+     */
+    EnNvsResult SetWifiPowerSave(bool wifiPowerSave);
 
     /**
      * @brief 現在のノードIDを取得します。

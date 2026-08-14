@@ -8,7 +8,7 @@
 - 各実装タスクは、対象の検証と`tasks-status.md`の進捗更新を完了してから個別にコミットする。
 - コミットは原則として1タスクにつき1件とし、別タスクの変更を混在させない。
 - 実装とレビューのsub-agentは、ユーザー指定どおり`gpt-5.6-sol`、reasoning effort `high`を使用する。
-- このセッションではユーザー指定により`reports/`へレポートを作成しない。検証結果はコミット本文と本ファイルへ記録する。
+- 各実装・検証・レビューは通常どおり`reports/`へレポートを作成し、該当タスクのコミットへ含める。
 - すべての追加・変更関数へ日本語Doxygenコメントを付ける。
 - enum class名は`En`で始め、クラス・関数名はUpperCamelCase、メンバー変数は`m_`に続くlowerCamelCaseとする。
 - 基本ファイル名は主要クラス名と一致させる。
@@ -18,9 +18,9 @@
 ## 現在位置
 
 - 現在フェーズ: P2 ESP-NOW通信とマスター選出
-- 完了タスク: T-001
-- 次タスク: T-002 ESP-NOW transportとWi-Fi設定基盤
-- 次タスク状態: 実装開始のユーザー確認待ち
+- 完了タスク: T-001, T-002
+- 次タスク: T-003 NodeStatus拡張とマスターTAG選出
+- 次タスク状態: 未着手
 - ブランチ: `codex/multitag-sequential-ranging`
 
 ## タスク一覧
@@ -28,7 +28,7 @@
 | ID | フェーズ | タスク | 見積 | 依存 | 状態 | コミット |
 | --- | --- | --- | --- | --- | --- | --- |
 | T-001 | P1 | 設計確定とタスク分解 | M | なし | 完了 | `75bb8af` + 本追跡コミット |
-| T-002 | P2 | ESP-NOW transportとWi-Fi設定基盤 | L | T-001 | 待機 | 未作成 |
+| T-002 | P2 | ESP-NOW transportとWi-Fi設定基盤 | L | T-001 | 完了 | 本タスクのコミット |
 | T-003 | P2 | NodeStatus拡張とマスターTAG選出 | M | T-002 | 未着手 | 未作成 |
 | T-004 | P3 | NTP四時刻同期とマスター時刻変換 | L | T-003 | 未着手 | 未作成 |
 | T-005 | P3 | RYUW122非同期測距API | L | T-001 | 未着手 | 未作成 |
@@ -72,6 +72,8 @@
 - `include/ConfigPreference.h`
 - `src/ConfigPreference.cpp`
 - 必要最小限のbuild設定とテスト
+- `reports/T-002-espnow-transport-implementation.md`
+- `reports/T-002-espnow-transport-normal-review.md`
 
 実施内容:
 
@@ -88,6 +90,14 @@
 - Wi-Fi省電力の既定値と設定分岐を検証できる。
 - M5StickS3 clean buildが成功する。
 - T-002だけのコミットを作成する。
+
+完了結果:
+
+- M5StickS3 clean/full build成功
+- RAM 51,168 / 327,680 bytes（15.6%）
+- Flash 1,215,463 / 3,342,336 bytes（36.4%）
+- 通常レビュー`pass_with_held`、必須修正findingなし
+- 実機ESP-NOW通信、queue飽和、timestamp折り返し、省電力差は保留
 
 ### T-003 NodeStatus拡張とマスターTAG選出
 
