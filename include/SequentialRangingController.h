@@ -162,6 +162,14 @@ public:
      */
     SequentialRangingDiagnostics GetDiagnostics() const;
 
+    /**
+     * @brief マスター識別情報またはセッションが変わった回数を取得します。
+     * 表示側は値の変化を検出して旧セッションの保持結果を破棄できます。
+     *
+     * @return セッション状態のリセット世代
+     */
+    uint32_t GetResetGeneration() const;
+
 private:
     static constexpr size_t m_maxNodeCount = 17U;
     static constexpr size_t m_highPriorityQueueCapacity = 4U;
@@ -427,6 +435,7 @@ private:
     uint32_t m_lastCompleteSequence = 0;
     uint32_t m_lastCompletedRoundId = 0;
     uint32_t m_nextPacketSequence = 0;
+    uint32_t m_resetGeneration = 0;
     uint32_t m_anchorCommandReceivedUs = 0;
     bool m_anchorListTruncated = false;
     bool m_tagListTruncated = false;

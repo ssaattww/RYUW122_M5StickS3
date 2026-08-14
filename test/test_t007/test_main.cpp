@@ -717,6 +717,7 @@ void TestMasterChangeClearsQueuedEventsAndRound()
     SequentialRangingController controller(transport, broadcast, coordinator,
         sync, ryuw, codec, GetNowUs);
     controller.Begin();
+    const uint32_t initialResetGeneration = controller.GetResetGeneration();
     controller.Update();
     RangeMeasurementData measurement = MakeMeasurement(tag, &anchor, 1,
         &tag, 1, 0, 0);
@@ -725,6 +726,9 @@ void TestMasterChangeClearsQueuedEventsAndRound()
     controller.Update();
     coordinator.SetMaster(MakeMaster(tag, 200), true);
     controller.Update();
+    TEST_ASSERT_EQUAL_UINT32(
+        initialResetGeneration + 1U,
+        controller.GetResetGeneration());
     TimedRangeMeasurement event{};
     SequentialRangeRoundSummary summary{};
     TEST_ASSERT_FALSE(controller.TryTakeMeasurement(event));

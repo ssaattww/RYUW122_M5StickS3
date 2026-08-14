@@ -19,9 +19,9 @@
 ## 現在位置
 
 - 現在フェーズ: P5 アプリケーション統合
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007
-- 次タスク: T-008 アプリケーション統合と逐次表示
-- 次タスク状態: T-008開始待ち
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008
+- 次タスク: T-009 統合テスト、M5StickS3 build、文書同期
+- 次タスク状態: T-009開始待ち
 - ブランチ: `codex/multitag-sequential-ranging`
 
 ## タスク一覧
@@ -34,8 +34,8 @@
 | T-004 | P3 | NTP四時刻同期とマスター時刻変換 | L | T-003 | 完了 | `933901e` |
 | T-005 | P3 | RYUW122非同期測距API | L | T-001 | 完了 | `2c8b156` |
 | T-006 | P4 | 複数TAG測距プロトコルとcodec | M | T-003, T-004 | 完了 | `5d18194` |
-| T-007 | P4 | 最短周期の順次測距状態機械 | XL | T-004, T-005, T-006 | 完了 | `c28461e` + 本修正コミット |
-| T-008 | P5 | アプリケーション統合と逐次表示 | L | T-007 | 未着手 | 未作成 |
+| T-007 | P4 | 最短周期の順次測距状態機械 | XL | T-004, T-005, T-006 | 完了 | `c28461e` + `7771fb1` |
+| T-008 | P5 | アプリケーション統合と逐次表示 | L | T-007 | 完了 | 本タスクのコミット |
 | T-009 | P5 | 統合テスト、M5StickS3 build、文書同期 | L | T-008 | 未着手 | 未作成 |
 | T-010 | P6 | sol high最終レビューと必要修正 | M | T-009 | 未着手 | 未作成 |
 
@@ -322,6 +322,23 @@
 - `main.cpp`へNTP計算、packet解析、二重ループ制御がない。
 - M5StickS3 clean buildが成功する。
 - T-008だけのコミットを作成する。
+
+通常レビューfinding:
+
+- T008-NR-001 Medium: 表示更新時にmeasurementとsummary FIFOを全件取り出し、最新状態を1回描画する。
+- T008-NR-002 Medium: RYUW122、ESP-NOW transport、broadcastの初期化失敗を永続表示する。
+- T008-NR-003 Low: マスターrole、session、validity変更時に旧測距表示を破棄する。
+
+完了結果:
+
+- T008-NR-001からT008-NR-003はすべてresolved
+- `SequentialRangingDisplay`へ逐次結果、round summary、NodeStatus、初期化状態の描画を分離
+- PlatformIO native test 58/58成功
+- M5StickS3 clean/full build成功
+- RAM 68,112 / 327,680 bytes（20.8%）
+- Flash 1,232,859 / 3,342,336 bytes（36.9%）
+- fix verification`pass_with_held`、新規findingなし
+- 実機画面視認性、複数ノード通信、NT-Shell同時操作は後続へ保留
 
 ### T-009 統合テスト、M5StickS3 build、文書同期
 

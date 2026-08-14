@@ -152,6 +152,16 @@ SequentialRangingDiagnostics SequentialRangingController::GetDiagnostics() const
     return m_diagnostics;
 }
 
+/**
+ * @brief マスター識別情報またはセッションが変わった回数を取得します。
+ *
+ * @return セッション状態のリセット世代
+ */
+uint32_t SequentialRangingController::GetResetGeneration() const
+{
+    return m_resetGeneration;
+}
+
 uint64_t SequentialRangingController::DefaultTimeProvider()
 {
     return static_cast<uint64_t>(esp_timer_get_time());
@@ -180,6 +190,7 @@ void SequentialRangingController::DetectMasterChange()
     }
 
     ResetSessionState();
+    ++m_resetGeneration;
     m_master = current;
     const NodeStatus& local = m_broadcast.GetLocalStatus();
     if (!current.isValid)

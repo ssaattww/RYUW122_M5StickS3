@@ -10,6 +10,9 @@
 #include "NvsPreferenceStore.h"
 #include "NtpTimeSynchronizer.h"
 #include "Ryuw122Controller.h"
+#include "SequentialRangingController.h"
+#include "SequentialRangingDisplay.h"
+#include "SequentialRangingProtocolCodec.h"
 #include "TagMasterCoordinator.h"
 
 namespace
@@ -29,6 +32,18 @@ namespace
         configRuntime);
     Ryuw122Controller ryuw122Controller(Serial1, configRuntime);
     M5Canvas canvas(&M5.Display);
+    SequentialRangingProtocolCodec sequentialRangingProtocolCodec;
+    SequentialRangingController sequentialRangingController(
+        espNowTransport,
+        espNowBroadcast,
+        tagMasterCoordinator,
+        ntpTimeSynchronizer,
+        ryuw122Controller,
+        sequentialRangingProtocolCodec);
+    SequentialRangingDisplay sequentialRangingDisplay(
+        sequentialRangingController,
+        espNowBroadcast,
+        canvas);
 
     constexpr int StatusBarHeight = 20;
 
@@ -77,67 +92,10 @@ namespace
         canvas.print(text);
     }
 
-    /**
-     * @brief 受信ノード一覧のヘッダーと全ノード状態をCanvasへ描画します。
-     * Modeは画面幅へ収めるためTagをT、AnchorをAで表示します。
-     *
-     * @param nodes 描画する受信済みノード一覧
-     */
-    void DrawReceivedNodes(const EspNowBroadcast::NodeMap& nodes)
-    {
-        constexpr int ContentLeft = 4;
-        constexpr int HeaderLineY = 23;
-        constexpr int LineHeight = 12;
-
-        canvas.fillRect(
-            0,
-            StatusBarHeight,
-            canvas.width(),
-            canvas.height() - StatusBarHeight,
-            TFT_BLACK);
-        canvas.setTextColor(TFT_WHITE);
-        canvas.setTextSize(1);
-
-        canvas.setCursor(ContentLeft, HeaderLineY);
-        canvas.print("ID MODE X,Y");
-
-        int lineY = HeaderLineY + LineHeight;
-        for (const auto& node : nodes)
-        {
-            const NodeStatus& status = node.second;
-            const char mode = status.mode == EnRunMode::Tag ? 'T' : 'A';
-            canvas.setCursor(ContentLeft, lineY);
-            canvas.printf(
-                "%u %c %u,%u",
-                status.nodeID,
-                mode,
-                status.anchorPositionX,
-                status.anchorPositionY);
-            lineY += LineHeight;
-        }
-    }
-
-    /**
-     * @brief mailboxから最新のノード状態を取り出しCanvasへ描画します。
-     *
-     * @return 受信状態を描画した場合はtrue、それ以外はfalse
-     */
-    bool TryDrawReceivedNodeStatus()
-    {
-        NodeStatus status{};
-        if (!espNowBroadcast.TryReceive(status))
-        {
-            return false;
-        }
-
-        DrawReceivedNodes(espNowBroadcast.GetNodes());
-        return true;
-    }
-
 };
 
 /**
- * @brief M5Stack、Canvas、NT-Shell、ESP-NOW通信とマスター選出を初期化します。
+ * @brief M5Stack、通信、時刻同期、逐次測距、画面、NT-Shellを初期化します。
  */
 void setup()
 {
@@ -158,33 +116,28 @@ void setup()
     const bool transportStarted = espNowTransport.Begin(
         configRuntime.GetCurrentEspnowChannel(),
         configRuntime.GetWifiPowerSave());
-    const bool espNowStarted =
+    const bool broadcastStarted =
         transportStarted && espNowBroadcast.Begin();
+    const bool espNowStarted = transportStarted && broadcastStarted;
     if (espNowStarted)
     {
         tagMasterCoordinator.Begin(millis());
     }
+    if (espNowStarted && ryuw122Result == EnRyuw122InitResult::Ok)
+    {
+        sequentialRangingController.Begin();
+    }
+    sequentialRangingDisplay.SetInitializationHealth(
+        ryuw122Result,
+        transportStarted,
+        broadcastStarted);
+    sequentialRangingDisplay.Update();
 
     canvas.fillSprite(TFT_BLACK);
     DrawStatus(
         configRuntime.GetRunMode(),
         configRuntime.GetCurrentNodeID());
-    if (ryuw122Result != EnRyuw122InitResult::Ok)
-    {
-        canvas.setTextColor(TFT_RED);
-        canvas.setTextSize(1);
-        canvas.setCursor(4, 30);
-        canvas.printf(
-            "RYUW122: %s",
-            Ryuw122Controller::GetResultName(ryuw122Result));
-    }
-    else if (!espNowStarted)
-    {
-        canvas.setTextColor(TFT_RED);
-        canvas.setTextSize(1);
-        canvas.setCursor(4, 30);
-        canvas.print("ESP-NOW init failed");
-    }
+    sequentialRangingDisplay.Draw(configRuntime.GetRunMode());
     canvas.pushSprite(0, 0);
 
     ntShell.RegisterCommands(preferenceCommands.GetCommands());
@@ -193,7 +146,7 @@ void setup()
 }
 
 /**
- * @brief 入力、ESP-NOW受信、マスター選出を処理して画面を更新します。
+ * @brief 入力、通信、同期、UWB測距、逐次測距、画面を順番に更新します。
  */
 void loop()
 {
@@ -214,15 +167,18 @@ void loop()
     espNowBroadcast.Update();
     tagMasterCoordinator.Update(millis());
     ntpTimeSynchronizer.Update();
-
-    canvasChanged = TryDrawReceivedNodeStatus() || canvasChanged;
+    ryuw122Controller.Update();
+    sequentialRangingController.Update();
+    canvasChanged = sequentialRangingDisplay.Update() || canvasChanged;
 
     if (canvasChanged)
     {
+        DrawStatus(
+            configRuntime.GetRunMode(),
+            configRuntime.GetCurrentNodeID());
+        sequentialRangingDisplay.Draw(configRuntime.GetRunMode());
         canvas.pushSprite(0, 0);
     }
-
-    ryuw122Controller.Update();
 
     delay(1);
 }
