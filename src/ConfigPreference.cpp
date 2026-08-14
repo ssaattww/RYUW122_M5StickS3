@@ -4,6 +4,8 @@ constexpr char ConfigPreferenceDefaults::m_runModeKey[];
 constexpr EnRunMode ConfigPreferenceDefaults::m_defaultRunMode;
 constexpr char ConfigPreferenceDefaults::m_espnowChannelKey[];
 constexpr uint8_t ConfigPreferenceDefaults::m_defaultEspnowChannel;
+constexpr char ConfigPreferenceDefaults::m_wifiPowerSaveKey[];
+constexpr bool ConfigPreferenceDefaults::m_defaultWifiPowerSave;
 constexpr char ConfigPreferenceDefaults::m_nodeIdKey[];
 constexpr uint8_t ConfigPreferenceDefaults::m_defaultNodeId;
 constexpr char ConfigPreferenceDefaults::m_anchorPositionXKey[];
@@ -97,6 +99,32 @@ EnNvsResult ConfigPreference::SetCurrentEspnowChannel(uint8_t channel)
     return m_store.SetU8(
         ConfigPreferenceDefaults::m_espnowChannelKey,
         channel);
+}
+
+EnNvsResult ConfigPreference::GetWifiPowerSave(bool& wifiPowerSave)
+{
+    wifiPowerSave = ConfigPreferenceDefaults::m_defaultWifiPowerSave;
+    const EnNvsResult result = m_store.GetBool(
+        ConfigPreferenceDefaults::m_wifiPowerSaveKey,
+        wifiPowerSave);
+    if (result == EnNvsResult::NotFound)
+    {
+        return SetWifiPowerSave(
+            ConfigPreferenceDefaults::m_defaultWifiPowerSave);
+    }
+    else if (result != EnNvsResult::Ok)
+    {
+        return result;
+    }
+
+    return result;
+}
+
+EnNvsResult ConfigPreference::SetWifiPowerSave(bool wifiPowerSave)
+{
+    return m_store.SetBool(
+        ConfigPreferenceDefaults::m_wifiPowerSaveKey,
+        wifiPowerSave);
 }
 
 EnNvsResult ConfigPreference::GetNodeID(uint8_t& nodeID)

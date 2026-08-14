@@ -6,7 +6,15 @@
 #include "ConfigPreference.h"
 #include "ConfigRuntime.h"
 #include "EspNowBroadcast.h"
+#include "EspNowReceiveQueueTerminator.h"
+#include "EspNowTransport.h"
 #include "NvsPreferenceStore.h"
+#include "NtpTimeSynchronizer.h"
+#include "Ryuw122Controller.h"
+#include "SequentialRangingController.h"
+#include "SequentialRangingDisplay.h"
+#include "SequentialRangingProtocolCodec.h"
+#include "TagMasterCoordinator.h"
 
 namespace
 {
@@ -15,8 +23,30 @@ namespace
     PreferenceCommands preferenceCommands(preferenceStore);
     ConfigPreference configPreference(preferenceStore);
     ConfigRuntime configRuntime;
-    EspNowBroadcast espNowBroadcast(configRuntime);
+    EspNowTransport espNowTransport;
+    EspNowBroadcast espNowBroadcast(espNowTransport, configRuntime);
+    TagMasterCoordinator tagMasterCoordinator(espNowBroadcast);
+    NtpTimeSynchronizer ntpTimeSynchronizer(
+        espNowTransport,
+        espNowBroadcast,
+        tagMasterCoordinator,
+        configRuntime);
+    Ryuw122Controller ryuw122Controller(Serial1, configRuntime);
     M5Canvas canvas(&M5.Display);
+    SequentialRangingProtocolCodec sequentialRangingProtocolCodec;
+    SequentialRangingController sequentialRangingController(
+        espNowTransport,
+        espNowBroadcast,
+        tagMasterCoordinator,
+        ntpTimeSynchronizer,
+        ryuw122Controller,
+        sequentialRangingProtocolCodec);
+    EspNowReceiveQueueTerminator espNowReceiveQueueTerminator(
+        espNowTransport);
+    SequentialRangingDisplay sequentialRangingDisplay(
+        sequentialRangingController,
+        espNowBroadcast,
+        canvas);
 
     constexpr int StatusBarHeight = 20;
 
@@ -65,67 +95,10 @@ namespace
         canvas.print(text);
     }
 
-    /**
-     * @brief 受信ノード一覧のヘッダーと全ノード状態をCanvasへ描画します。
-     * Modeは画面幅へ収めるためTagをT、AnchorをAで表示します。
-     *
-     * @param nodes 描画する受信済みノード一覧
-     */
-    void DrawReceivedNodes(const EspNowBroadcast::NodeMap& nodes)
-    {
-        constexpr int ContentLeft = 4;
-        constexpr int HeaderLineY = 23;
-        constexpr int LineHeight = 12;
-
-        canvas.fillRect(
-            0,
-            StatusBarHeight,
-            canvas.width(),
-            canvas.height() - StatusBarHeight,
-            TFT_BLACK);
-        canvas.setTextColor(TFT_WHITE);
-        canvas.setTextSize(1);
-
-        canvas.setCursor(ContentLeft, HeaderLineY);
-        canvas.print("ID MODE X,Y");
-
-        int lineY = HeaderLineY + LineHeight;
-        for (const auto& node : nodes)
-        {
-            const NodeStatus& status = node.second;
-            const char mode = status.mode == EnRunMode::Tag ? 'T' : 'A';
-            canvas.setCursor(ContentLeft, lineY);
-            canvas.printf(
-                "%u %c %u,%u",
-                status.nodeID,
-                mode,
-                status.anchorPositionX,
-                status.anchorPositionY);
-            lineY += LineHeight;
-        }
-    }
-
-    /**
-     * @brief mailboxから最新のノード状態を取り出しCanvasへ描画します。
-     *
-     * @return 受信状態を描画した場合はtrue、それ以外はfalse
-     */
-    bool TryDrawReceivedNodeStatus()
-    {
-        NodeStatus status{};
-        if (!espNowBroadcast.TryReceive(status))
-        {
-            return false;
-        }
-
-        DrawReceivedNodes(espNowBroadcast.GetNodes());
-        return true;
-    }
-
 };
 
 /**
- * @brief M5Stack、Canvas、NT-Shell、ESP-NOWブロードキャストを初期化します。
+ * @brief M5Stack、通信、時刻同期、逐次測距、画面、NT-Shellを初期化します。
  */
 void setup()
 {
@@ -142,19 +115,32 @@ void setup()
     preferenceStore.Begin();
     configRuntime.Init(configPreference);
 
-    const bool espNowStarted = espNowBroadcast.Begin();
+    const EnRyuw122InitResult ryuw122Result = ryuw122Controller.Begin();
+    const bool transportStarted = espNowTransport.Begin(
+        configRuntime.GetCurrentEspnowChannel(),
+        configRuntime.GetWifiPowerSave());
+    const bool broadcastStarted =
+        transportStarted && espNowBroadcast.Begin();
+    const bool espNowStarted = transportStarted && broadcastStarted;
+    if (espNowStarted)
+    {
+        tagMasterCoordinator.Begin(millis());
+    }
+    if (espNowStarted && ryuw122Result == EnRyuw122InitResult::Ok)
+    {
+        sequentialRangingController.Begin();
+    }
+    sequentialRangingDisplay.SetInitializationHealth(
+        ryuw122Result,
+        transportStarted,
+        broadcastStarted);
+    sequentialRangingDisplay.Update();
 
     canvas.fillSprite(TFT_BLACK);
     DrawStatus(
         configRuntime.GetRunMode(),
         configRuntime.GetCurrentNodeID());
-    if (!espNowStarted)
-    {
-        canvas.setTextColor(TFT_RED);
-        canvas.setTextSize(1);
-        canvas.setCursor(4, 30);
-        canvas.print("ESP-NOW init failed");
-    }
+    sequentialRangingDisplay.Draw(configRuntime.GetRunMode());
     canvas.pushSprite(0, 0);
 
     ntShell.RegisterCommands(preferenceCommands.GetCommands());
@@ -163,12 +149,12 @@ void setup()
 }
 
 /**
- * @brief M5Stackの入力とESP-NOW受信を処理し、変更したCanvasを実画面へ転送します。
+ * @brief 入力、通信、同期、UWB測距、逐次測距、画面を順番に更新します。
  */
 void loop()
 {
     M5.update();
-    bool canvasChanged = TryDrawReceivedNodeStatus();
+    bool canvasChanged = false;
     if (M5.BtnA.isPressed())
     {
         EnRunMode runmode = configRuntime.GetRunMode();
@@ -180,12 +166,26 @@ void loop()
         canvasChanged = true;
     }
 
+    espNowTransport.Update();
+    // transport更新後の削除件数を既知consumer処理前に固定する。
+    espNowReceiveQueueTerminator.BeginCycle();
+    espNowBroadcast.Update();
+    tagMasterCoordinator.Update(millis());
+    ntpTimeSynchronizer.Update();
+    ryuw122Controller.Update();
+    sequentialRangingController.Update();
+    // 既知consumerがFIFOを進めなかったcycleだけ未所有packetを1件破棄する。
+    espNowReceiveQueueTerminator.Update();
+    canvasChanged = sequentialRangingDisplay.Update() || canvasChanged;
+
     if (canvasChanged)
     {
+        DrawStatus(
+            configRuntime.GetRunMode(),
+            configRuntime.GetCurrentNodeID());
+        sequentialRangingDisplay.Draw(configRuntime.GetRunMode());
         canvas.pushSprite(0, 0);
     }
-
-    espNowBroadcast.Update();
 
     delay(1);
 }
