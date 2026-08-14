@@ -49,7 +49,7 @@ EKFは各測距結果を独立した非同期観測として、その結果が�
 - NVSによるWi-Fi省電力設定
 - 最大8台のANCHORと最大8台のTAGによる順次測距
 - 正常系の固定待機時間を持たない状態機械
-- 重複、タイムアウト、古いラウンド、マスターTAG変更の処理
+- 基本的なタイムアウト、古いラウンド破棄、マスターTAG変更の処理
 
 次の処理は本設計の対象外とする。
 
@@ -107,19 +107,13 @@ ESP-NOWとWi-Fiの初期化および送受信を所有する。
 - パケット種別による上位クラスへの配送
 
 ESP-NOW送信は全宛先を通じて1件だけin-flightにし、送信完了コールバックを受け取ってから次の`esp_now_send()`を呼ぶ。
-送信要求は固定長の優先度付きキューへ入れる。
+送信要求は単純な固定長FIFOへ入れる。
 
-優先度は次の順とする。
-
-1. 次のANCHORへ渡す`RangeControl`
-2. `RangeMeasurement`と最終組み合わせ通知
-3. 測距結果のACK
-4. フォロワーTAGへの結果転送と再送
-5. NTP同期通信
-6. NodeStatus
+次ANCHORへ移る場面では、呼び出し側が`RangeControl`を測距結果通知より先にFIFOへ入れる。
+複数段階の優先度制御、packet置換、輻輳制御は初期実装へ入れない。
+FIFOが満杯の場合は送信要求を失敗として呼び出し側へ返し、診断件数だけを記録する。
 
 NTP同期中は測距ラウンドを開始しないため、NTP通信と測距制御が競合する正常経路はない。
-キューが満杯の場合は低優先度パケットを高優先度パケットで置き換え、drop種別と件数を診断情報として保持する。
 
 受信情報として最低限次をコピーする。
 
@@ -184,7 +178,7 @@ ESP-NOW本体は所有せず、`EspNowTransport`を参照する。
 - マスターTAG変更の検出
 - 旧マスターセッションの測距および同期状態の無効化
 - マスターTAGのMACアドレス、ノードID、セッションIDの提供
-- 一時的に複数マスターが存在した場合の小さいTAG ID優先による収束
+- 受信済みNodeStatusに基づく小さいTAG IDへの切替
 
 全ノードは同じ選出規則を使用する。
 起動直後は500msの選出待ち時間を設けてNodeStatusを収集する。
@@ -262,7 +256,7 @@ TAG側とANCHOR側の順次測距状態機械を担当する。
 
 | ヘッダー | 実装 | 主責務 |
 | --- | --- | --- |
-| `include/EspNowTransport.h` | `src/EspNowTransport.cpp` | raw ESP-NOW、受信情報コピー、優先度付き送信 |
+| `include/EspNowTransport.h` | `src/EspNowTransport.cpp` | raw ESP-NOW、受信情報コピー、固定長FIFO送信 |
 | `include/EspNowBroadcast.h` | `src/EspNowBroadcast.cpp` | NodeStatusと`m_nodes` |
 | `include/TagMasterCoordinator.h` | `src/TagMasterCoordinator.cpp` | 最小TAG IDによるマスター選出 |
 | `include/NtpTimeSynchronizer.h` | `src/NtpTimeSynchronizer.cpp` | NTP四時刻同期と時刻変換 |
@@ -494,9 +488,7 @@ NtpSyncResponse
 NtpSyncCommit
 RangeControl
 RangeMeasurement
-RangeMeasurementAck
 RangeMeasurementForward
-RangeMeasurementForwardAck
 RangeRoundComplete
 ```
 
@@ -569,18 +561,14 @@ struct RangeMeasurementWireResult
 `RangeMeasurementForward`はマスターTAG基準へ変換した同じ1件を対象フォロワーTAGへ送る。
 全結果を1パケットへ蓄積しないため、ANCHOR数とTAG数が増えてもESP-NOW v1の250バイト上限を超えない。
 
-マスターTAGは有効な`RangeMeasurement`を受信したら、重複を排除したうえで`RangeMeasurementAck`を返す。
-ANCHORはACK待ち結果を最大8件の固定長キューに保持し、次のUWB測距を止めずに期限内で再送する。
-
-フォロワーTAGも`RangeMeasurementForward`へ`RangeMeasurementForwardAck`を返す。
-マスターTAGはフォロワー向け未確認結果を1ラウンド最大64件の固定長キューへ保持する。
-再送とACKは測距制御より低い優先度で処理し、次の測距開始を遅らせない。
+初期実装ではESP-NOWの送信完了コールバックだけを使用し、アプリケーション層のACKと再送キューは設けない。
+送信失敗またはpacket lossはラウンドの欠損として検出し、次ラウンドで新しい観測を取得する。
 
 ### 10.8 ラウンド完了
 
 最終ANCHORの最終TAG測距結果には最終組み合わせフラグを付ける。
 マスターTAGは最終フラグと受信済み組み合わせbitsetを確認し、全件受信またはラウンドタイムアウトで`RangeRoundComplete`を確定する。
-マスターTAGは次ラウンドの`RangeControl`を優先送信した後、ラウンドID、期待件数、受信件数、欠損bitsetを含む`RangeRoundComplete`を各フォロワーTAGへ低優先度で通知する。
+マスターTAGは次ラウンドの`RangeControl`を先に送信要求した後、ラウンドID、期待件数、受信件数、欠損bitsetを含む`RangeRoundComplete`を各フォロワーTAGへ通知する。
 
 各wire構造体に`static_assert(sizeof(...) <= 250)`を置く。
 パケットは一括結果ではなく1件単位のため、ESP-NOW v2専用の1470バイトペイロードには依存しない。
@@ -695,7 +683,7 @@ ANCHORが1台以上あり、TAG一覧が確定したら未同期ノードの同�
 対象がフォロワーTAGなら、変換済み結果をそのTAGへ逐次転送する。
 
 最終組み合わせの結果と全結果bitsetを確認したらラウンド完了を確定する。
-同じ`Update()`内で次ラウンド制御を最小IDのANCHORへ最優先送信し、その後に画面描画や低優先度の結果転送を処理する。
+同じ`Update()`内で次ラウンド制御を最小IDのANCHORへ先に送信要求し、その後に画面描画や結果転送を処理する。
 
 ラウンドタイムアウト時は未受信の組み合わせを欠損としてラウンド完了情報へ記録し、古いラウンドを無効化して次ラウンドへ進む。
 
@@ -737,13 +725,11 @@ UWB失敗でも次の組み合わせへ進む。
 
 ### 13.3 Forwarding
 
-自ANCHORの最終TAGが完了し、次の`anchorIndex`が存在する場合は、次ANCHORへの測距制御を最高優先度で送る。
+自ANCHORの最終TAGが完了し、次の`anchorIndex`が存在する場合は、次ANCHORへの測距制御を結果通知より先に送信要求する。
 自ノードが最後のANCHORの場合、最終測距結果へ最終組み合わせフラグを付けてマスターTAGへ送る。
 
 次ANCHORへの制御送信要求をキューへ投入した後、固定待機をせず`Idle`へ戻る。
-送信結果を確認できるまで、再送に必要な制御パケットを固定領域へ保持する。
-
-次ANCHORのMACアドレスが見つからない場合、または制御送信が失敗した場合は、残りの組み合わせが到達不能であることをマスターTAGへ通知する。
+次ANCHORのMACアドレスが見つからない場合、または制御送信が失敗した場合は、残りの組み合わせが到達不能であることをマスターTAGへ1回通知する。
 マスターTAGへの通知も失敗した場合は、マスター側ラウンドタイムアウトによる回復に任せる。
 
 ### 13.4 WaitingForLateResponseDrain
@@ -850,11 +836,10 @@ sequenceDiagram
 masterTagId + master MAC + sessionId + roundId + anchorIndex + tagIndex
 ```
 
-同一ANCHORが同じラウンドと同じTAG indexを重複受信した場合、UWB測距を再実行しない。
-保存済みの1件結果をマスターTAGへ再送する。
+同一ANCHORが同じラウンドと同じTAG indexを重複受信した場合、UWB測距を再実行せず破棄する。
 
-マスターTAGが同じ測距結果を重複受信した場合、アプリケーションへは再公開せずACKだけを再送する。
-フォロワーTAGが同じ転送結果を重複受信した場合も、アプリケーションへは再公開せずACKだけを再送する。
+マスターTAGまたはフォロワーTAGが同じ測距結果を重複受信した場合、アプリケーションへ再公開せず破棄する。
+初期実装では重複packetに対する再送応答を行わない。
 
 現在より古いラウンドは破棄する。
 現在より新しいラウンドを受信した場合、古い保留状態を破棄して新しいラウンドへ移る。
@@ -871,7 +856,6 @@ masterTagId + master MAC + sessionId + roundId + anchorIndex + tagIndex
 | NTPサンプル数 | 3回 |
 | UWB測距待ち | 300ms |
 | ESP-NOW送信完了待ち | 50ms |
-| 測距結果ACK待ち | 50ms |
 | NodeStatus有効期間 | 30秒 |
 | 初回マスター選出待ち | 500ms |
 
@@ -886,7 +870,7 @@ roundTimeoutMs
 
 固定値としてラウンド周期を制限しない。
 正常に最終組み合わせの結果を受信した場合、ラウンドタイムアウトを待たず次ラウンドを開始する。
-逐次結果のACK再送とフォロワー転送はラウンドタイムアウトの待機理由にしない。
+フォロワー転送はラウンドタイムアウトの待機理由にしない。
 
 ## 17. 時刻品質
 
@@ -979,8 +963,8 @@ NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーンを`m
 - 結果送信待ちと次UWB測距が独立して進むこと
 - UWB失敗後も次のTAGまたは次ANCHORへ進むこと
 - 最終組み合わせ受信直後の次ラウンド開始
-- 測距結果ACK、重複排除、期限内再送
-- フォロワーTAGへの逐次転送とACK
+- 重複結果を二重公開しないこと
+- フォロワーTAGへの逐次転送
 - 最大パケットサイズが250バイト以内
 - Wi-Fi省電力設定の既定値がOFF
 

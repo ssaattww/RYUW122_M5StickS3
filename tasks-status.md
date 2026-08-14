@@ -12,6 +12,7 @@
 - すべての追加・変更関数へ日本語Doxygenコメントを付ける。
 - enum class名は`En`で始め、クラス・関数名はUpperCamelCase、メンバー変数は`m_`に続くlowerCamelCaseとする。
 - 基本ファイル名は主要クラス名と一致させる。
+- 初期実装は正常系を優先し、アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧を実装しない。
 - 実装対象は`C:\Users\taiga\Documents\PlatformIO\Projects\RYUW122_M5StickS3`とし、`.pio/libdeps`は編集しない。
 
 ## 現在位置
@@ -76,7 +77,7 @@
 
 - raw ESP-NOWの初期化、peer管理、受信キュー、送信完了キューを実装する。
 - `const esp_now_recv_info_t*`からMAC、RSSI、channel、受信timestampを固定長構造体へコピーする。
-- 1件in-flightの優先度付き固定長送信キューを実装する。
+- 1件in-flightの単純な固定長FIFO送信を実装する。
 - NVSの`wifi_power_save`をbool、既定値falseとして追加する。
 - OFF時は`WIFI_PS_NONE`、ON時は`WIFI_PS_MIN_MODEM`をESP-NOW開始前に適用する。
 
@@ -134,7 +135,7 @@
 完了条件:
 
 - offset、RTT、時刻変換、折り返し、最小RTT選択をホストテストできる。
-- 不正MAC、session、sequence、channelの応答を拒否する。
+- session、sequence、対象ノードが一致しない応答を拒否する。
 - Wi-Fi省電力ONと受信timestamp欠落を時刻品質へ反映する。
 - M5StickS3 buildが成功する。
 - T-004だけのコミットを作成する。
@@ -173,14 +174,14 @@
 
 実施内容:
 
-- 測距制御、逐次結果、ACK、フォロワー転送、ラウンド完了packetを定義する。
+- 測距制御、逐次結果、フォロワー転送、ラウンド完了packetを定義する。
 - wire enumを明示幅へ変換し、magic、version、長さ、session、indexを検証する。
 - 最大8 ANCHOR、最大8 TAGの経路を表現する。
 - 結果を1件ずつ送信し、ESP-NOW v1の250バイト上限内に保つ。
 
 完了条件:
 
-- 全packetのencode/decode正常系と破損系テストが成功する。
+- 全packetのencode/decode正常系と基本的な長さ・version不正テストが成功する。
 - 全wire構造体へ250バイト以下の`static_assert`がある。
 - `enum class`の生サイズや構造体の暗黙paddingへ依存しない。
 - M5StickS3 buildが成功する。
@@ -201,7 +202,7 @@
 - 同じANCHORの次TAG測距とESP-NOW結果送信を可能な限り並行させる。
 - 次ANCHORへの制御を結果転送より優先する。
 - マスターで1件ずつ公開し、フォロワーTAGへ対象結果を逐次転送する。
-- 重複排除、ACK、再送、timeout、欠損、旧session破棄を実装する。
+- 二重公開防止、基本timeout、欠損、旧session破棄を実装する。
 - 最終結果受信直後に次ラウンドを開始する。
 
 完了条件:
@@ -209,7 +210,7 @@
 - `A1-T1, A1-T2, A2-T1, A2-T2, A3-T1, A3-T2`順序をテストで確認する。
 - 全ラウンド完了前に各測距結果を取得できる。
 - 50msなどの固定待機がない。
-- UWB失敗やpacket再送があっても無限待機しない。
+- UWB失敗やpacket欠損があってもラウンドtimeoutで無限待機しない。
 - マスター交代で旧ラウンドが停止し、再同期後に再開する。
 - ホストテストとM5StickS3 buildが成功する。
 - T-007だけのコミットを作成する。
@@ -250,7 +251,7 @@
 実施内容:
 
 - 複数TAG、複数ANCHORのend-to-end状態機械をfake transportとfake UWBで検証する。
-- マスター交代、時刻同期、逐次公開、ACK再送、timeoutを結合して検証する。
+- マスター交代、時刻同期、逐次公開、基本timeoutを結合して検証する。
 - clean build、静的なDoxygen・命名・packet size検査を行う。
 - 実装結果と設計書、進捗ファイルを同期する。
 
