@@ -19,9 +19,9 @@
 ## 現在位置
 
 - 現在フェーズ: P3 時刻同期とUWB測距基盤
-- 完了タスク: T-001, T-002, T-003
-- 次タスク: T-004 NTP四時刻同期とマスター時刻変換
-- 次タスク状態: 未着手
+- 完了タスク: T-001, T-002, T-003, T-004
+- 次タスク: T-005 RYUW122非同期測距API
+- 次タスク状態: T-005開始待ち
 - ブランチ: `codex/multitag-sequential-ranging`
 
 ## タスク一覧
@@ -30,8 +30,8 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | T-001 | P1 | 設計確定とタスク分解 | M | なし | 完了 | `75bb8af` + 本追跡コミット |
 | T-002 | P2 | ESP-NOW transportとWi-Fi設定基盤 | L | T-001 | 完了 | `b2fbdc8` |
-| T-003 | P2 | NodeStatus拡張とマスターTAG選出 | M | T-002 | 完了 | 本タスクのコミット |
-| T-004 | P3 | NTP四時刻同期とマスター時刻変換 | L | T-003 | 未着手 | 未作成 |
+| T-003 | P2 | NodeStatus拡張とマスターTAG選出 | M | T-002 | 完了 | `50002aa` |
+| T-004 | P3 | NTP四時刻同期とマスター時刻変換 | L | T-003 | 完了 | 本タスクのコミット |
 | T-005 | P3 | RYUW122非同期測距API | L | T-001 | 未着手 | 未作成 |
 | T-006 | P4 | 複数TAG測距プロトコルとcodec | M | T-003, T-004 | 未着手 | 未作成 |
 | T-007 | P4 | 最短周期の順次測距状態機械 | XL | T-004, T-005, T-006 | 未着手 | 未作成 |
@@ -165,6 +165,21 @@
 - Wi-Fi省電力ONと受信timestamp欠落を時刻品質へ反映する。
 - M5StickS3 buildが成功する。
 - T-004だけのコミットを作成する。
+
+通常レビューfinding:
+
+- T004-NR-001 Medium: フォロワーの時刻変換と同期経過時間を、同じマスター時計domainの移動参照で計算する。
+- T004-NR-002 Medium: 同一マスターセッション中に後から有効になった未処理ノードを同期対象へ追加する。
+
+完了結果:
+
+- T004-NR-001 Medium、T004-NR-002 Mediumはいずれもresolved
+- PlatformIO native T-004 test 13/13成功、T-003回帰test 5/5成功
+- M5StickS3 clean/full build成功
+- RAM 52,144 / 327,680 bytes（15.9%）
+- Flash 1,215,867 / 3,342,336 bytes（36.4%）
+- fix verification`pass_with_held`、新規findingなし
+- 実機受信timestamp、packet loss、clock drift、Wi-Fi省電力差は後続へ保留
 
 ### T-005 RYUW122非同期測距API
 

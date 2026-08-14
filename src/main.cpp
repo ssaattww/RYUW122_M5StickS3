@@ -8,6 +8,7 @@
 #include "EspNowBroadcast.h"
 #include "EspNowTransport.h"
 #include "NvsPreferenceStore.h"
+#include "NtpTimeSynchronizer.h"
 #include "Ryuw122Controller.h"
 #include "TagMasterCoordinator.h"
 
@@ -21,6 +22,11 @@ namespace
     EspNowTransport espNowTransport;
     EspNowBroadcast espNowBroadcast(espNowTransport, configRuntime);
     TagMasterCoordinator tagMasterCoordinator(espNowBroadcast);
+    NtpTimeSynchronizer ntpTimeSynchronizer(
+        espNowTransport,
+        espNowBroadcast,
+        tagMasterCoordinator,
+        configRuntime);
     Ryuw122Controller ryuw122Controller(Serial1, configRuntime);
     M5Canvas canvas(&M5.Display);
 
@@ -207,7 +213,7 @@ void loop()
     espNowTransport.Update();
     espNowBroadcast.Update();
     tagMasterCoordinator.Update(millis());
-    espNowBroadcast.Update();
+    ntpTimeSynchronizer.Update();
 
     canvasChanged = TryDrawReceivedNodeStatus() || canvasChanged;
 

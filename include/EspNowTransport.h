@@ -163,6 +163,14 @@ public:
     bool TryGetSendResult(EspNowSendResult& result);
 
     /**
+     * @brief 送信中packetと送信待ちFIFOがどちらも空か確認します。
+     * NTP時刻取得直後の送信に待ち時間を挟まないために使用します。
+     *
+     * @return transportが開始済みで送信待ちがない場合はtrue
+     */
+    bool IsSendIdle() const;
+
+    /**
      * @brief ESP-NOWが開始済みか確認します。
      *
      * @return 開始済みの場合はtrue、それ以外はfalse

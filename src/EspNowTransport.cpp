@@ -225,6 +225,14 @@ bool EspNowTransport::TryGetSendResult(EspNowSendResult& result)
     return xQueueReceive(m_sendResultQueue, &result, 0) == pdTRUE;
 }
 
+bool EspNowTransport::IsSendIdle() const
+{
+    return m_started &&
+        !m_sendInFlight &&
+        m_sendQueue != nullptr &&
+        uxQueueMessagesWaiting(m_sendQueue) == 0;
+}
+
 bool EspNowTransport::IsStarted() const
 {
     return m_started;
