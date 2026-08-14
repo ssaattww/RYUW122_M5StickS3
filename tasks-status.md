@@ -19,9 +19,9 @@
 ## 現在位置
 
 - 現在フェーズ: P4 複数TAG順次測距
-- 完了タスク: T-001, T-002, T-003, T-004, T-005
-- 次タスク: T-006 複数TAG測距プロトコルとcodec
-- 次タスク状態: T-006開始待ち
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006
+- 次タスク: T-007 最短周期の順次測距状態機械
+- 次タスク状態: T-007開始待ち
 - ブランチ: `codex/multitag-sequential-ranging`
 
 ## タスク一覧
@@ -32,8 +32,8 @@
 | T-002 | P2 | ESP-NOW transportとWi-Fi設定基盤 | L | T-001 | 完了 | `b2fbdc8` |
 | T-003 | P2 | NodeStatus拡張とマスターTAG選出 | M | T-002 | 完了 | `50002aa` |
 | T-004 | P3 | NTP四時刻同期とマスター時刻変換 | L | T-003 | 完了 | `933901e` |
-| T-005 | P3 | RYUW122非同期測距API | L | T-001 | 完了 | 本タスクのコミット |
-| T-006 | P4 | 複数TAG測距プロトコルとcodec | M | T-003, T-004 | 未着手 | 未作成 |
+| T-005 | P3 | RYUW122非同期測距API | L | T-001 | 完了 | `2c8b156` |
+| T-006 | P4 | 複数TAG測距プロトコルとcodec | M | T-003, T-004 | 完了 | 本タスクのコミット |
 | T-007 | P4 | 最短周期の順次測距状態機械 | XL | T-004, T-005, T-006 | 未着手 | 未作成 |
 | T-008 | P5 | アプリケーション統合と逐次表示 | L | T-007 | 未着手 | 未作成 |
 | T-009 | P5 | 統合テスト、M5StickS3 build、文書同期 | L | T-008 | 未着手 | 未作成 |
@@ -241,6 +241,17 @@
 - `enum class`の生サイズや構造体の暗黙paddingへ依存しない。
 - M5StickS3 buildが成功する。
 - T-006だけのコミットを作成する。
+
+完了結果:
+
+- 測距命令45 bytes、逐次測距結果117 bytes、ラウンド完了58 bytesの固定長packetを実装
+- 全packetが250 bytes以下で、session、round、packet sequence、pair sequence、ノード順序を検証可能
+- PlatformIO native T-006 test 9/9、既存回帰test 30/30成功
+- M5StickS3 clean/full build成功
+- RAM 52,088 / 327,680 bytes（15.9%）
+- Flash 1,217,423 / 3,342,336 bytes（36.4%）
+- 通常レビュー`pass_with_held`、必須修正findingなし
+- 実機相互通信と異種endian相互運用は保留
 
 ### T-007 最短周期の順次測距状態機械
 
