@@ -7,6 +7,7 @@
 #include "ConfigRuntime.h"
 #include "EspNowBroadcast.h"
 #include "NvsPreferenceStore.h"
+#include "Ryuw122Controller.h"
 
 namespace
 {
@@ -16,6 +17,7 @@ namespace
     ConfigPreference configPreference(preferenceStore);
     ConfigRuntime configRuntime;
     EspNowBroadcast espNowBroadcast(configRuntime);
+    Ryuw122Controller ryuw122Controller(Serial1, configRuntime);
     M5Canvas canvas(&M5.Display);
 
     constexpr int StatusBarHeight = 20;
@@ -142,13 +144,23 @@ void setup()
     preferenceStore.Begin();
     configRuntime.Init(configPreference);
 
+    const EnRyuw122InitResult ryuw122Result = ryuw122Controller.Begin();
     const bool espNowStarted = espNowBroadcast.Begin();
 
     canvas.fillSprite(TFT_BLACK);
     DrawStatus(
         configRuntime.GetRunMode(),
         configRuntime.GetCurrentNodeID());
-    if (!espNowStarted)
+    if (ryuw122Result != EnRyuw122InitResult::Ok)
+    {
+        canvas.setTextColor(TFT_RED);
+        canvas.setTextSize(1);
+        canvas.setCursor(4, 30);
+        canvas.printf(
+            "RYUW122: %s",
+            Ryuw122Controller::GetResultName(ryuw122Result));
+    }
+    else if (!espNowStarted)
     {
         canvas.setTextColor(TFT_RED);
         canvas.setTextSize(1);
@@ -186,6 +198,7 @@ void loop()
     }
 
     espNowBroadcast.Update();
+    ryuw122Controller.Update();
 
     delay(1);
 }
