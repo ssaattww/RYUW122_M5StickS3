@@ -101,7 +101,18 @@ public:
             return false;
         }
         m_receivedPackets.pop_front();
+        ++m_consumedReceiveCount;
         return true;
+    }
+
+    /**
+     * @brief 成功した受信FIFO削除の累積件数を取得します。
+     *
+     * @return ConsumeReceive()が成功した累積件数
+     */
+    uint32_t GetConsumedReceiveCount() const
+    {
+        return m_consumedReceiveCount;
     }
 
     /**
@@ -122,6 +133,16 @@ public:
     void PushReceived(const EspNowReceivedPacket& packet)
     {
         m_receivedPackets.push_back(packet);
+    }
+
+    /**
+     * @brief 受信FIFOに残るpacket件数を取得します。
+     *
+     * @return 受信FIFOのpacket件数
+     */
+    size_t GetReceivedPacketCount() const
+    {
+        return m_receivedPackets.size();
     }
 
     /**
@@ -153,4 +174,5 @@ public:
 private:
     std::deque<EspNowReceivedPacket> m_receivedPackets;
     std::deque<EspNowTestSentPacket> m_sentPackets;
+    uint32_t m_consumedReceiveCount = 0;
 };

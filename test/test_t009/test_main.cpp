@@ -2,6 +2,7 @@
 
 #include "ConfigRuntime.h"
 #include "EspNowBroadcast.h"
+#include "EspNowReceiveQueueTerminator.h"
 #include "EspNowTransport.h"
 #include "NodeStatus.h"
 #include "NtpTimeProtocolCodec.h"
@@ -33,7 +34,8 @@ namespace
          * @param status 自ノード状態
          */
         explicit IntegrationNode(const NodeStatus& status)
-            : m_coordinator(m_broadcast),
+            : m_broadcast(m_transport),
+              m_coordinator(m_broadcast),
               m_synchronizer(
                   m_transport,
                   m_broadcast,
@@ -47,7 +49,8 @@ namespace
                   m_synchronizer,
                   m_ryuw122,
                   m_codec,
-                  GetIntegrationTimeUs)
+                  GetIntegrationTimeUs),
+              m_receiveQueueTerminator(m_transport)
         {
             m_broadcast.SetLocalStatus(status);
         }
@@ -60,6 +63,7 @@ namespace
         Ryuw122Controller m_ryuw122;
         SequentialRangingProtocolCodec m_codec;
         SequentialRangingController m_controller;
+        EspNowReceiveQueueTerminator m_receiveQueueTerminator;
     };
 
     /**
@@ -82,6 +86,147 @@ namespace
             mode == EnRunMode::Tag ? "T%07u" : "A%07u",
             static_cast<unsigned int>(nodeId));
         return status;
+    }
+
+    /**
+     * @brief 任意のwire payloadをtest用受信packetへ格納します。
+     *
+     * @param payload 格納するwire payload
+     * @param payloadLength wire payloadサイズ
+     * @param source 送信元ノード状態
+     * @param destination 送信先ノード状態
+     * @return 生成した受信packet
+     */
+    EspNowReceivedPacket MakeReceivedPacket(
+        const void* payload,
+        size_t payloadLength,
+        const NodeStatus& source,
+        const NodeStatus& destination)
+    {
+        EspNowReceivedPacket packet{};
+        memcpy(packet.sourceMac, source.macAddress, 6);
+        memcpy(packet.destinationMac, destination.macAddress, 6);
+        packet.channel = 6;
+        packet.receivedTimestampUs = static_cast<uint32_t>(g_nowUs);
+        packet.payloadLength = static_cast<uint16_t>(payloadLength);
+        packet.hasRxControl = true;
+        memcpy(packet.payload, payload, payloadLength);
+        return packet;
+    }
+
+    /**
+     * @brief 全既知consumerに属さないtest用packetを生成します。
+     *
+     * @param source 送信元ノード状態
+     * @param destination 送信先ノード状態
+     * @return 生成した未知packet
+     */
+    EspNowReceivedPacket MakeUnknownPacket(
+        const NodeStatus& source,
+        const NodeStatus& destination)
+    {
+        NtpPacketHeader header{};
+        header.magic = NtpTimeProtocolCodec::m_magic;
+        header.version = NtpTimeProtocolCodec::m_version;
+        header.packetType = 0xffU;
+        header.sessionId = 1U;
+        header.sequence = 1U;
+        return MakeReceivedPacket(
+            &header,
+            sizeof(header),
+            source,
+            destination);
+    }
+
+    /**
+     * @brief 有効なNodeStatus wire packetをtest用受信packetとして生成します。
+     *
+     * @param source 送信元ノード状態
+     * @param destination 送信先ノード状態
+     * @return 生成したNodeStatus packet
+     */
+    EspNowReceivedPacket MakeNodeStatusPacket(
+        const NodeStatus& source,
+        const NodeStatus& destination)
+    {
+        NodeStatusWirePacket wire{};
+        TEST_ASSERT_TRUE(NodeStatusCodec::Encode(source, wire));
+        return MakeReceivedPacket(
+            &wire,
+            sizeof(wire),
+            source,
+            destination);
+    }
+
+    /**
+     * @brief 有効なNTP同期要求をtest用受信packetとして生成します。
+     *
+     * @param source 送信元ノード状態
+     * @param destination 送信先ノード状態
+     * @return 生成したNTP packet
+     */
+    EspNowReceivedPacket MakeNtpPacket(
+        const NodeStatus& source,
+        const NodeStatus& destination)
+    {
+        NtpSyncRequestPacket wire{};
+        TEST_ASSERT_TRUE(NtpTimeProtocolCodec::EncodeRequest(
+            1U,
+            1U,
+            source.nodeID,
+            source.macAddress,
+            destination.nodeID,
+            100U,
+            wire));
+        return MakeReceivedPacket(
+            &wire,
+            sizeof(wire),
+            source,
+            destination);
+    }
+
+    /**
+     * @brief 有効な逐次測距制御をtest用受信packetとして生成します。
+     *
+     * @param source 送信元ノード状態
+     * @param destination 送信先ノード状態
+     * @return 生成した逐次測距packet
+     */
+    EspNowReceivedPacket MakeRangingPacket(
+        const NodeStatus& source,
+        const NodeStatus& destination)
+    {
+        RangeControlData control{};
+        control.roundId = 1U;
+        control.pairSequence = 1U;
+        control.masterTagId = source.nodeID;
+        memcpy(control.masterMac, source.macAddress, 6);
+        control.anchorCount = 1U;
+        control.tagCount = 1U;
+        control.anchorIds[0] = destination.nodeID;
+        control.tagIds[0] = source.nodeID;
+        RangeControlPacket wire{};
+        SequentialRangingProtocolCodec codec;
+        TEST_ASSERT_TRUE(codec.EncodeControl(1U, 1U, control, wire));
+        return MakeReceivedPacket(
+            &wire,
+            sizeof(wire),
+            source,
+            destination);
+    }
+
+    /**
+     * @brief 実機loopと同じ既知consumer順と最終所有境界を1回駆動します。
+     *
+     * @param node 駆動する統合対象ノード
+     */
+    void UpdateReceivePipeline(IntegrationNode& node)
+    {
+        node.m_receiveQueueTerminator.BeginCycle();
+        node.m_broadcast.Update();
+        node.m_synchronizer.Update();
+        node.m_controller.Update();
+        node.m_receiveQueueTerminator.Update();
     }
 
     /**
@@ -413,6 +558,246 @@ namespace
         TEST_ASSERT_EQUAL_UINT32(58U, sizeof(RangeRoundCompletePacket));
         TEST_ASSERT_TRUE(sizeof(RangeMeasurementPacket) <= 250U);
     }
+
+    /**
+     * @brief 未知packet後のNodeStatusを次回更新で既知consumerへ渡します。
+     */
+    void TestUnknownThenNodeStatusReachesBroadcast()
+    {
+        const NodeStatus local = MakeNode(1U, EnRunMode::Tag);
+        const NodeStatus remote = MakeNode(10U, EnRunMode::Anchor);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+        node.m_transport.PushReceived(MakeUnknownPacket(remote, local));
+        node.m_transport.PushReceived(MakeNodeStatusPacket(remote, local));
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            1U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(0U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            1U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_broadcast.GetNodes().size());
+    }
+
+    /**
+     * @brief 未知packet後のNTP packetを次回更新で既知consumerへ渡します。
+     */
+    void TestUnknownThenNtpReachesSynchronizer()
+    {
+        const NodeStatus local = MakeNode(1U, EnRunMode::Tag);
+        const NodeStatus remote = MakeNode(2U, EnRunMode::Tag);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+        node.m_transport.PushReceived(MakeUnknownPacket(remote, local));
+        node.m_transport.PushReceived(MakeNtpPacket(remote, local));
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            1U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(0U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            1U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+    }
+
+    /**
+     * @brief 未知packet後の逐次測距packetを次回更新で既知consumerへ渡します。
+     */
+    void TestUnknownThenRangingReachesController()
+    {
+        const NodeStatus local = MakeNode(10U, EnRunMode::Anchor);
+        const NodeStatus remote = MakeNode(1U, EnRunMode::Tag);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+        node.m_transport.PushReceived(MakeUnknownPacket(remote, local));
+        node.m_transport.PushReceived(MakeRangingPacket(remote, local));
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            1U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(0U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            1U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            1U,
+            node.m_controller.GetDiagnostics().invalidPacketCount);
+    }
+
+    /**
+     * @brief 最終所有境界が複数未知packetを1更新1件で逐次破棄することを確認します。
+     */
+    void TestMultipleUnknownPacketsAreDiscardedOnePerUpdate()
+    {
+        const NodeStatus local = MakeNode(1U, EnRunMode::Tag);
+        const NodeStatus remote = MakeNode(2U, EnRunMode::Tag);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+        node.m_transport.PushReceived(MakeUnknownPacket(remote, local));
+        node.m_transport.PushReceived(MakeUnknownPacket(remote, local));
+        node.m_transport.PushReceived(MakeUnknownPacket(remote, local));
+
+        for (uint32_t updateCount = 1U; updateCount <= 3U; ++updateCount)
+        {
+            UpdateReceivePipeline(node);
+            TEST_ASSERT_EQUAL_UINT32(
+                3U - updateCount,
+                node.m_transport.GetReceivedPacketCount());
+            TEST_ASSERT_EQUAL_UINT32(
+                updateCount,
+                node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+        }
+    }
+
+    /**
+     * @brief 既知3種が同一更新内で各consumerに消費されることを確認します。
+     */
+    void TestKnownPacketsDoNotReachTerminator()
+    {
+        const NodeStatus local = MakeNode(10U, EnRunMode::Anchor);
+        const NodeStatus tag = MakeNode(1U, EnRunMode::Tag);
+        const NodeStatus other = MakeNode(20U, EnRunMode::Anchor);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+        node.m_transport.PushReceived(MakeNodeStatusPacket(other, local));
+        node.m_transport.PushReceived(MakeNtpPacket(tag, local));
+        node.m_transport.PushReceived(MakeRangingPacket(tag, local));
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(0U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            0U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_broadcast.GetNodes().size());
+    }
+
+    /**
+     * @brief NTP後のNodeStatusを別cycleで各既知consumerへ渡します。
+     */
+    void TestNtpThenNodeStatusReachesEachOwner()
+    {
+        const NodeStatus local = MakeNode(1U, EnRunMode::Tag);
+        const NodeStatus remoteTag = MakeNode(2U, EnRunMode::Tag);
+        const NodeStatus remoteAnchor = MakeNode(10U, EnRunMode::Anchor);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+        node.m_transport.PushReceived(MakeNtpPacket(remoteTag, local));
+        node.m_transport.PushReceived(
+            MakeNodeStatusPacket(remoteAnchor, local));
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            0U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(0U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            0U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_broadcast.GetNodes().size());
+    }
+
+    /**
+     * @brief 測距、NTP、NodeStatusの逆順をcycleごとに各ownerへ渡します。
+     */
+    void TestRangingThenNtpThenNodeStatusReachesEachOwner()
+    {
+        const NodeStatus local = MakeNode(10U, EnRunMode::Anchor);
+        const NodeStatus remoteTag = MakeNode(1U, EnRunMode::Tag);
+        const NodeStatus remoteAnchor = MakeNode(20U, EnRunMode::Anchor);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+        node.m_transport.PushReceived(
+            MakeRangingPacket(remoteTag, local));
+        node.m_transport.PushReceived(MakeNtpPacket(remoteTag, local));
+        node.m_transport.PushReceived(
+            MakeNodeStatusPacket(remoteAnchor, local));
+
+        for (uint32_t remaining = 2U; remaining > 0U; --remaining)
+        {
+            UpdateReceivePipeline(node);
+            TEST_ASSERT_EQUAL_UINT32(
+                remaining,
+                node.m_transport.GetReceivedPacketCount());
+            TEST_ASSERT_EQUAL_UINT32(
+                0U,
+                node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+        }
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(0U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            0U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_broadcast.GetNodes().size());
+    }
+
+    /**
+     * @brief 既知packet消費後の未知packet破棄を次cycleへ延期します。
+     */
+    void TestKnownProgressDefersFollowingUnknownPacket()
+    {
+        const NodeStatus local = MakeNode(1U, EnRunMode::Tag);
+        const NodeStatus remote = MakeNode(2U, EnRunMode::Tag);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+        node.m_transport.PushReceived(MakeNtpPacket(remote, local));
+        node.m_transport.PushReceived(MakeUnknownPacket(remote, local));
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            0U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(0U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            1U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+    }
+
+    /**
+     * @brief cycle開始後に到着したpacketをterminal処理から次cycleへ延期します。
+     */
+    void TestPacketArrivingAfterCycleSnapshotIsDeferred()
+    {
+        const NodeStatus local = MakeNode(1U, EnRunMode::Tag);
+        const NodeStatus remote = MakeNode(10U, EnRunMode::Anchor);
+        IntegrationNode node(local);
+        node.m_controller.Begin();
+
+        node.m_receiveQueueTerminator.BeginCycle();
+        node.m_broadcast.Update();
+        node.m_transport.PushReceived(MakeNodeStatusPacket(remote, local));
+        node.m_synchronizer.Update();
+        node.m_controller.Update();
+        node.m_receiveQueueTerminator.Update();
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(
+            0U,
+            node.m_receiveQueueTerminator.GetDiscardedPacketCount());
+
+        UpdateReceivePipeline(node);
+        TEST_ASSERT_EQUAL_UINT32(0U, node.m_transport.GetReceivedPacketCount());
+        TEST_ASSERT_EQUAL_UINT32(1U, node.m_broadcast.GetNodes().size());
+    }
 }
 
 /**
@@ -470,5 +855,14 @@ int main()
 {
     UNITY_BEGIN();
     RUN_TEST(TestProductionIntegratedThreeAnchorTwoTagLifecycle);
+    RUN_TEST(TestUnknownThenNodeStatusReachesBroadcast);
+    RUN_TEST(TestUnknownThenNtpReachesSynchronizer);
+    RUN_TEST(TestUnknownThenRangingReachesController);
+    RUN_TEST(TestMultipleUnknownPacketsAreDiscardedOnePerUpdate);
+    RUN_TEST(TestKnownPacketsDoNotReachTerminator);
+    RUN_TEST(TestNtpThenNodeStatusReachesEachOwner);
+    RUN_TEST(TestRangingThenNtpThenNodeStatusReachesEachOwner);
+    RUN_TEST(TestKnownProgressDefersFollowingUnknownPacket);
+    RUN_TEST(TestPacketArrivingAfterCycleSnapshotIsDeferred);
     return UNITY_END();
 }

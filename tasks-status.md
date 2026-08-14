@@ -18,10 +18,10 @@
 
 ## 現在位置
 
-- 現在フェーズ: P6 最終確認
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009
-- 次タスク: T-010 sol high最終レビューと必要修正
-- 次タスク状態: T-010開始待ち
+- 現在フェーズ: 完了
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010
+- 次タスク: なし
+- 次タスク状態: 全タスク完了
 - ブランチ: `codex/multitag-sequential-ranging`
 
 ## タスク一覧
@@ -36,8 +36,8 @@
 | T-006 | P4 | 複数TAG測距プロトコルとcodec | M | T-003, T-004 | 完了 | `5d18194` |
 | T-007 | P4 | 最短周期の順次測距状態機械 | XL | T-004, T-005, T-006 | 完了 | `c28461e` + `7771fb1` |
 | T-008 | P5 | アプリケーション統合と逐次表示 | L | T-007 | 完了 | `6ce3365` |
-| T-009 | P5 | 統合テスト、M5StickS3 build、文書同期 | L | T-008 | 完了 | 本タスクのコミット |
-| T-010 | P6 | sol high最終レビューと必要修正 | M | T-009 | 未着手 | 未作成 |
+| T-009 | P5 | 統合テスト、M5StickS3 build、文書同期 | L | T-008 | 完了 | `ecd6e37` |
+| T-010 | P6 | sol high最終レビューと必要修正 | M | T-009 | 完了 | 本タスクのコミット |
 
 ## タスク詳細
 
@@ -406,6 +406,23 @@
 - 修正後のホストテストとM5StickS3 clean/full buildが成功する。
 - 最終状態を追跡ファイルへ反映する。
 - T-010だけのコミットを作成する。
+
+独立最終レビューfinding:
+
+- T010-IFR-001 Medium: 未所有packetが共有ESP-NOW受信FIFOを恒久的に先頭blockしないterminal ownerを追加する。
+- T010-IFR-002 Medium: consumer順と逆の既知packetをterminal ownerが破棄しない進捗handshakeを追加する。
+
+完了結果:
+
+- T010-IFR-001 Medium、T010-IFR-002 Mediumはいずれもresolved
+- `EspNowReceiveQueueTerminator`とtransport consume counterで未知packetの最終所有を実装
+- 逆順known、unknownからknown、multiple unknown、新着延期をproduction更新順で検証
+- PlatformIO native test 69/69成功
+- M5StickS3 clean/full build成功
+- RAM 68,136 / 327,680 bytes（20.8%）
+- Flash 1,233,375 / 3,342,336 bytes（36.9%）
+- 独立最終fix verification`pass_with_held`、新規findingなし、unexploredなし
+- 実機3 ANCHOR×2 TAG、packet loss、queue飽和、clock drift、M5Stack各機種は保留
 
 ## 実機保留項目
 

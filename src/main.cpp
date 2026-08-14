@@ -6,6 +6,7 @@
 #include "ConfigPreference.h"
 #include "ConfigRuntime.h"
 #include "EspNowBroadcast.h"
+#include "EspNowReceiveQueueTerminator.h"
 #include "EspNowTransport.h"
 #include "NvsPreferenceStore.h"
 #include "NtpTimeSynchronizer.h"
@@ -40,6 +41,8 @@ namespace
         ntpTimeSynchronizer,
         ryuw122Controller,
         sequentialRangingProtocolCodec);
+    EspNowReceiveQueueTerminator espNowReceiveQueueTerminator(
+        espNowTransport);
     SequentialRangingDisplay sequentialRangingDisplay(
         sequentialRangingController,
         espNowBroadcast,
@@ -164,11 +167,15 @@ void loop()
     }
 
     espNowTransport.Update();
+    // transport更新後の削除件数を既知consumer処理前に固定する。
+    espNowReceiveQueueTerminator.BeginCycle();
     espNowBroadcast.Update();
     tagMasterCoordinator.Update(millis());
     ntpTimeSynchronizer.Update();
     ryuw122Controller.Update();
     sequentialRangingController.Update();
+    // 既知consumerがFIFOを進めなかったcycleだけ未所有packetを1件破棄する。
+    espNowReceiveQueueTerminator.Update();
     canvasChanged = sequentialRangingDisplay.Update() || canvasChanged;
 
     if (canvasChanged)

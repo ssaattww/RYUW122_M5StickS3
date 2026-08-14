@@ -147,6 +147,13 @@ public:
     bool ConsumeReceive();
 
     /**
+     * @brief 成功した受信queue削除の累積件数を取得します。
+     *
+     * @return ConsumeReceive()が成功した累積件数
+     */
+    uint32_t GetConsumedReceiveCount() const;
+
+    /**
      * @brief 受信queueからpacketを1件取得します。
      *
      * @param packet 受信packetの格納先
@@ -257,6 +264,7 @@ private:
     bool m_sendInFlight = false;
     bool m_started = false;
     uint32_t m_receivedQueueFullCount = 0;
+    uint32_t m_consumedReceiveCount = 0;
     uint32_t m_sendQueueFullCount = 0;
     uint32_t m_sendCallbackQueueFullCount = 0;
     uint32_t m_sendResultQueueFullCount = 0;

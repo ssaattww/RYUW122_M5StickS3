@@ -11,7 +11,7 @@
 | `native_t006` | T-006 逐次測距protocol codec |
 | `native_t007` | T-007 逐次測距controller |
 | `native_t008` | T-008 画面統合 |
-| `native_t009` | T-009 production layer統合 |
+| `native_t009` | T-009 production layer統合と受信FIFO最終所有境界 |
 
 全nativeテストは次のコマンドで実行する。
 

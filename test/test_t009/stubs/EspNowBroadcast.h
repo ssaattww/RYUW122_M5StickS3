@@ -1,5 +1,6 @@
 #pragma once
 
+#include "EspNowTransport.h"
 #include "NodeStatus.h"
 
 #include <array>
@@ -15,6 +16,47 @@ class EspNowBroadcast
 public:
     using NodeAddress = std::array<uint8_t, 6>;
     using NodeMap = std::map<NodeAddress, NodeStatus>;
+
+    /**
+     * @brief 共有受信FIFOを使用するtest用broadcastを生成します。
+     *
+     * @param transport 共有するESP-NOW transport
+     */
+    explicit EspNowBroadcast(EspNowTransport& transport)
+        : m_transport(transport)
+    {
+    }
+
+    /**
+     * @brief FIFO先頭にあるNodeStatus packetだけを処理します。
+     */
+    void Update()
+    {
+        EspNowReceivedPacket packet{};
+        while (m_transport.PeekReceive(packet))
+        {
+            if (!NodeStatusCodec::IsNodeStatusPacket(
+                    packet.payload,
+                    packet.payloadLength))
+            {
+                return;
+            }
+            if (!m_transport.ConsumeReceive())
+            {
+                return;
+            }
+
+            NodeStatus status{};
+            if (NodeStatusCodec::Decode(
+                    packet.payload,
+                    packet.payloadLength,
+                    packet.sourceMac,
+                    status))
+            {
+                PutNode(status, 0U);
+            }
+        }
+    }
 
     /**
      * @brief 自ノード状態を設定します。
@@ -93,6 +135,7 @@ public:
     }
 
 private:
+    EspNowTransport& m_transport;
     NodeStatus m_localStatus{};
     NodeMap m_nodes;
     std::map<NodeAddress, uint32_t> m_lastSeen;

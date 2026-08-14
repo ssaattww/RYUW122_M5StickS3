@@ -200,10 +200,17 @@ bool EspNowTransport::ConsumeReceive()
     }
 
     EspNowReceivedPacket discardedPacket{};
-    return xQueueReceive(
-        m_receivedQueue,
-        &discardedPacket,
-        0) == pdTRUE;
+    if (xQueueReceive(m_receivedQueue, &discardedPacket, 0) != pdTRUE)
+    {
+        return false;
+    }
+    ++m_consumedReceiveCount;
+    return true;
+}
+
+uint32_t EspNowTransport::GetConsumedReceiveCount() const
+{
+    return m_consumedReceiveCount;
 }
 
 bool EspNowTransport::TryReceive(EspNowReceivedPacket& packet)
