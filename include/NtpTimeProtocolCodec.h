@@ -65,7 +65,7 @@ struct NtpSyncResponsePacket
 };
 
 /**
- * @brief マスターTAGからフォロワーTAGへ送る同期確定通知を表します。
+ * @brief マスターTAGから全非マスターノードへ送る同期確定通知を表します。
  */
 struct NtpSyncCommitPacket
 {
@@ -173,7 +173,7 @@ public:
      *
      * @param sessionId マスターセッションID
      * @param sequence 通知シーケンス
-     * @param targetNodeId 対象フォロワーTAG ID
+     * @param targetNodeId 対象となる非マスターノードID
      * @param nodeMinusMasterUs 対象時計からマスター時計へのoffset
      * @param roundTripUs 採用した往復遅延
      * @param timeQuality 採用した時刻品質

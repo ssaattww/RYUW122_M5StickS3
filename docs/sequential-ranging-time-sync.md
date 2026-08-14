@@ -126,6 +126,7 @@ struct EspNowReceivedPacket
     uint8_t channel;
     uint32_t receivedTimestampUs;
     uint16_t payloadLength;
+    bool hasRxControl;
     uint8_t payload[250];
 };
 ```
@@ -203,11 +204,12 @@ ANCHORは進行中のUWB処理を安全に終了または排出するが、旧�
 - 各ノード時刻からマスターTAG基準時刻への変換
 - 同期時RSSI、受信チャンネル、同期経過時間の提供
 - マスターTAG変更時の同期情報破棄
-- フォロワーTAGへの同期結果通知
+- 全非マスターノードへの同期結果通知
 
 マスターTAG以外のノードは最終的な時計差を決定しない。
 マスターTAGが全ノードの時計差を保持し、測距結果を受信するたびにANCHOR時刻をマスターTAG基準へ変換する。
-フォロワーTAGには採用した時計差、往復遅延、同期品質を通知し、フォロワー側のセンサー時刻も同じ基準へ変換できるようにする。
+全非マスターノードへ採用した時計差、往復遅延、同期品質を通知する。
+ANCHORは測距時刻を、フォロワーTAGは自ノードのセンサー時刻を同じ基準へ変換できる。
 
 ### 5.5 Ryuw122Controller
 
@@ -262,7 +264,7 @@ TAG側とANCHOR側の順次測距状態機械を担当する。
 | `include/NtpTimeSynchronizer.h` | `src/NtpTimeSynchronizer.cpp` | NTP四時刻同期と時刻変換 |
 | `include/Ryuw122Controller.h` | `src/Ryuw122Controller.cpp` | RYUW122初期化と非同期UWB測距 |
 | `include/SequentialRangingController.h` | `src/SequentialRangingController.cpp` | 二重ループ測距と逐次結果公開 |
-| `include/SequentialRangingProtocol.h` | `src/SequentialRangingProtocol.cpp` | wire packetのencode、decode、検証 |
+| `include/SequentialRangingProtocolCodec.h` | `src/SequentialRangingProtocolCodec.cpp` | `SequentialRangingProtocolCodec`によるwire packetのencode、decode、検証 |
 
 ## 6. ESP-NOW受信情報
 
@@ -468,8 +470,19 @@ enumの生サイズには依存せず、wire上では`uint8_t`へ変換する。
 
 ### 10.1 共通ヘッダー
 
+NTPと逐次測距は同じfield配置を持つ別のheader型を使用する。
+
 ```cpp
-struct RangePacketHeader
+struct NtpPacketHeader
+{
+    uint16_t magic;
+    uint8_t version;
+    uint8_t packetType;
+    uint32_t sessionId;
+    uint32_t sequence;
+};
+
+struct SequentialRangingPacketHeader
 {
     uint16_t magic;
     uint8_t version;
@@ -481,72 +494,135 @@ struct RangePacketHeader
 
 ### 10.2 パケット種別
 
-```text
-NodeStatus
-NtpSyncRequest
-NtpSyncResponse
-NtpSyncCommit
-RangeControl
-RangeMeasurement
-RangeMeasurementForward
-RangeRoundComplete
-```
+実装のenum値、wire構造体、encode APIの対応は次のとおりである。
+
+| Codec | packet種別 | wire構造体 | encode API | サイズ |
+| --- | --- | --- | --- | ---: |
+| `NodeStatusCodec` | `EnNodeStatusPacketType::NodeStatus` | `NodeStatusWirePacket` | `Encode` | 29バイト |
+| `NtpTimeProtocolCodec` | `EnNtpPacketType::SyncRequest` | `NtpSyncRequestPacket` | `EncodeRequest` | 24バイト |
+| `NtpTimeProtocolCodec` | `EnNtpPacketType::SyncResponse` | `NtpSyncResponsePacket` | `EncodeResponse` | 27バイト |
+| `NtpTimeProtocolCodec` | `EnNtpPacketType::SyncCommit` | `NtpSyncCommitPacket` | `EncodeCommit` | 34バイト |
+| `SequentialRangingProtocolCodec` | `EnSequentialRangingPacketType::RangeControl` | `RangeControlPacket` | `EncodeControl` | 45バイト |
+| `SequentialRangingProtocolCodec` | `EnSequentialRangingPacketType::RangeMeasurement` | `RangeMeasurementPacket` | `EncodeMeasurement` | 117バイト |
+| `SequentialRangingProtocolCodec` | `EnSequentialRangingPacketType::RangeMeasurementForward` | `RangeMeasurementPacket` | `EncodeMeasurementForward` | 117バイト |
+| `SequentialRangingProtocolCodec` | `EnSequentialRangingPacketType::RangeRoundComplete` | `RangeRoundCompletePacket` | `EncodeRoundComplete` | 58バイト |
+
+実装済みの固定wireサイズは次のとおりで、すべてESP-NOW v1の250バイト上限以内である。
+
+| wire構造体 | サイズ | 主なフィールド |
+| --- | ---: | --- |
+| `NodeStatusWirePacket` | 29バイト | magic、version、種別、ノードID、role、MAC、UWBアドレス、ANCHOR座標、master宣言、session ID |
+| `NtpSyncRequestPacket` | 24バイト | 共通header、master ID・MAC、target ID、`t1` |
+| `NtpSyncResponsePacket` | 27バイト | 共通header、target ID、`t1`、`t2`、`t3`、受信timestamp有無、省電力状態 |
+| `NtpSyncCommitPacket` | 34バイト | 共通header、target ID、offset、往復遅延、時刻品質、同期確定時刻 |
+| `RangeControlPacket` | 45バイト | 共通header、round・pair sequence、master識別、件数・index、ANCHOR・TAG ID一覧 |
+| `RangeMeasurementPacket` | 117バイト | 共通header、round・pair、両ノード識別、測距値、3ローカル時刻、3 master時刻、同期品質 |
+| `RangeRoundCompletePacket` | 58バイト | 共通header、round、次round、master識別、開始・完了時刻、件数、欠損bitset、timeout |
 
 ### 10.3 同期要求
 
-同期要求には次を含める。
+同期要求の完全なwire構造体は次のとおりである。
 
-- 共通ヘッダー
-- マスターTAG IDとMACアドレス
-- 対象ノードID
-- `t1`
+```cpp
+struct NtpSyncRequestPacket
+{
+    NtpPacketHeader header;
+    uint8_t masterNodeId;
+    uint8_t masterMac[6];
+    uint8_t targetNodeId;
+    uint32_t t1;
+};
+```
 
 ### 10.4 同期応答
 
-同期応答には次を含める。
+同期応答の完全なwire構造体は次のとおりである。
 
-- 共通ヘッダー
-- 対象ノードID
-- 要求から受け取った`t1`
-- 受信時刻`t2`
-- 応答送信時刻`t3`
+```cpp
+struct NtpSyncResponsePacket
+{
+    NtpPacketHeader header;
+    uint8_t targetNodeId;
+    uint32_t t1;
+    uint32_t t2;
+    uint32_t t3;
+    uint8_t receiveTimestampAvailable;
+    uint8_t powerSaveEnabled;
+};
+```
+
+`receiveTimestampAvailable`は`t2`に受信制御情報のtimestampを使用できたかを表し、`powerSaveEnabled`は対象ノードのWi-Fi省電力状態を表す。
 
 ### 10.5 同期確定通知
 
-フォロワーTAGへ送る同期確定通知には次を含める。
+全非マスターノードへ送る同期確定通知の完全なwire構造体は次のとおりである。
 
-- 共通ヘッダー
-- 対象TAG ID
-- 採用した`nodeMinusMasterUs`
-- 同期往復遅延
-- 同期品質
-- 同期確定時のマスターTAG時刻
+```cpp
+struct NtpSyncCommitPacket
+{
+    NtpPacketHeader header;
+    uint8_t targetNodeId;
+    int64_t nodeMinusMasterUs;
+    uint32_t roundTripUs;
+    uint8_t timeQuality;
+    uint64_t synchronizedAtMasterTimeUs;
+};
+```
 
 ### 10.6 測距制御
 
-測距制御パケットには次を含める。
+`SequentialRangingProtocolCodec::EncodeControl()`が生成する完全なwire構造体は次のとおりである。
 
-- 共通ヘッダー
-- ラウンドID
-- マスターTAG IDとMACアドレス
-- ANCHOR数
-- TAG数
-- 現在の`anchorIndex`
-- 最大8件のANCHOR ID一覧
-- 最大8件のTAG ID一覧
+```cpp
+struct RangeControlPacket
+{
+    SequentialRangingPacketHeader header;
+    uint32_t roundId;
+    uint16_t pairSequence;
+    uint8_t masterTagId;
+    uint8_t masterMac[6];
+    uint8_t anchorCount;
+    uint8_t tagCount;
+    uint8_t anchorIndex;
+    uint8_t tagIndex;
+    uint8_t anchorIds[8];
+    uint8_t tagIds[8];
+};
+```
+
+`tagIndex`はANCHORへ制御を渡す時点では0である。
+最初のANCHOR向けpacketはmaster TAGをESP-NOW送信元とし、2台目以降は直前のANCHORを送信元とする。
+ESP-NOW宛先は`anchorIds[anchorIndex]`に対応するANCHORのMACアドレスであり、送信元・宛先MACアドレスはtransport metadataとして検証するため`RangeControlPacket`内へ重複格納しない。
 
 各ノードのMACアドレスとTAGのUWBアドレスは`EspNowBroadcast`のNodeStatus表から解決する。
 ラウンド開始時のID一覧と現在のNodeStatus表が一致しない場合、その組み合わせを到達不能としてマスターTAGへ通知する。
 
 ### 10.7 逐次測距結果
 
-wire上の1件の測距結果は次の情報を持つ。
+`RangeMeasurement`と`RangeMeasurementForward`は同じ`RangeMeasurementPacket`を使用し、`header.packetType`で区別する。
+`SequentialRangingProtocolCodec::EncodeMeasurement()`と`EncodeMeasurementForward()`が生成する完全なwire構造体は次のとおりである。
 
 ```cpp
-struct RangeMeasurementWireResult
+struct RangingNodeWireIdentity
 {
-    uint8_t anchorId;
-    uint8_t tagId;
+    uint8_t nodeId;
+    uint8_t macAddress[6];
+    char uwbAddress[8];
+};
+
+struct RangeMeasurementPacket
+{
+    SequentialRangingPacketHeader header;
+    uint32_t roundId;
+    uint16_t pairSequence;
+    uint8_t masterTagId;
+    uint8_t masterMac[6];
+    uint8_t anchorCount;
+    uint8_t tagCount;
+    uint8_t anchorIndex;
+    uint8_t tagIndex;
+    RangingNodeWireIdentity anchor;
+    RangingNodeWireIdentity tag;
     uint8_t status;
     uint32_t distanceMm;
     int16_t uwbRssi;
@@ -554,11 +630,19 @@ struct RangeMeasurementWireResult
     uint32_t rangingStartedUs;
     uint32_t rangingCompletedUs;
     int8_t espNowRssi;
+    uint64_t commandReceivedMasterTimeUs;
+    uint64_t rangingStartedMasterTimeUs;
+    uint64_t rangingCompletedMasterTimeUs;
+    uint32_t synchronizationRoundTripUs;
+    uint64_t synchronizationAgeUs;
+    uint8_t timeQuality;
+    uint8_t isLastMeasurement;
 };
 ```
 
-`RangeMeasurement`は1件の結果だけをマスターTAGへ送る。
-`RangeMeasurementForward`はマスターTAG基準へ変換した同じ1件を対象フォロワーTAGへ送る。
+`RangeMeasurement`はANCHORをESP-NOW送信元、master TAGを宛先として、ANCHORローカル時刻を含む1件の結果を送る。
+`RangeMeasurementForward`はmaster TAGを送信元、`tag.macAddress`を宛先として、master基準へ変換した3時刻、同期往復遅延、同期経過時間、時刻品質を含む同じ1件を対象フォロワーTAGへ送る。
+送信元・宛先MACアドレスはtransport metadataと、wire内の`masterMac`、`anchor.macAddress`、`tag.macAddress`を組み合わせて検証する。
 全結果を1パケットへ蓄積しないため、ANCHOR数とTAG数が増えてもESP-NOW v1の250バイト上限を超えない。
 
 初期実装ではESP-NOWの送信完了コールバックだけを使用し、アプリケーション層のACKと再送キューは設けない。
@@ -566,9 +650,33 @@ struct RangeMeasurementWireResult
 
 ### 10.8 ラウンド完了
 
+`SequentialRangingProtocolCodec::EncodeRoundComplete()`が生成する完全なwire構造体は次のとおりである。
+
+```cpp
+struct RangeRoundCompletePacket
+{
+    SequentialRangingPacketHeader header;
+    uint32_t roundId;
+    uint32_t nextRoundId;
+    uint8_t masterTagId;
+    uint8_t masterMac[6];
+    uint64_t startedMasterTimeUs;
+    uint64_t completedMasterTimeUs;
+    uint8_t anchorCount;
+    uint8_t tagCount;
+    uint8_t expectedMeasurementCount;
+    uint8_t receivedMeasurementCount;
+    uint64_t missingMeasurementBits;
+    uint8_t anchorListTruncated;
+    uint8_t tagListTruncated;
+    uint8_t timedOut;
+};
+```
+
 最終ANCHORの最終TAG測距結果には最終組み合わせフラグを付ける。
 マスターTAGは最終フラグと受信済み組み合わせbitsetを確認し、全件受信またはラウンドタイムアウトで`RangeRoundComplete`を確定する。
 マスターTAGは次ラウンドの`RangeControl`を先に送信要求した後、ラウンドID、期待件数、受信件数、欠損bitsetを含む`RangeRoundComplete`を各フォロワーTAGへ通知する。
+最終ANCHORからmaster TAGへの経路完了通知と、master TAGから各フォロワーTAGへのsummary通知は同じwire構造体を使用し、ESP-NOW送信元と宛先で経路を検証する。
 
 各wire構造体に`static_assert(sizeof(...) <= 250)`を置く。
 パケットは一括結果ではなく1件単位のため、ESP-NOW v2専用の1470バイトペイロードには依存しない。
@@ -802,9 +910,7 @@ sequenceDiagram
     Note over M: offsetとRTTを計算
     M->>N: 同じ交換を合計3回実施
     Note over M: 最小RTTサンプルを採用
-    opt 対象がフォロワーTAG
-        M-->>N: NtpSyncCommit offset,RTT,quality
-    end
+    M-->>N: NtpSyncCommit offset,RTT,quality
 ```
 
 ### 14.3 マスターTAG交代
@@ -910,7 +1016,60 @@ NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーンを`m
 画面描画やNT-Shell処理により、次測距または次ラウンド開始が遅延してはならない。
 マスターTAGは逐次結果を内部FIFOへ保存し、必要な次測距制御を送信キューへ入れた後、画面描画を行う。
 
-## 19. コーディング規約
+## 19. 実装同期状況
+
+### 19.1 実装済みのgateと更新順
+
+`loop()`は`EspNowTransport`、`EspNowBroadcast`、`TagMasterCoordinator`、`NtpTimeSynchronizer`、`Ryuw122Controller`、`SequentialRangingController`、`SequentialRangingDisplay`の順に更新し、末尾の`delay(1)`で実行権を譲る。
+50msなどの測距slot待ちは設けていない。
+
+マスターTAGは全非マスターノードのNTP処理が完了するまで`WaitingForSynchronization`に留まる。
+各非マスターノードは正当な`NtpSyncCommit`を受け取るまで同期完了とせず、ANCHORは同期済みローカルノードIDを取得できる場合だけ`RangeControl`を受理する。
+master、session、送信元MAC、宛先MAC、target ID、受信チャンネルが一致しない同期packetは受理しない。
+
+同期完了後は有効期限内でIDが一意なノードだけをround snapshotへ含める。
+最終測距結果を受信すると同じ`Update()`内でround summaryを保存し、次roundの最小ANCHOR向け制御を高優先度FIFOへ追加する。
+round timeoutは`ANCHOR数 * TAG数 * 300ms + ANCHOR数 * 50ms + 50ms`で計算する。
+
+### 19.2 固定長queue
+
+動的に増える結果queueは使用しない。
+実装済みの主な容量は次のとおりである。
+
+| 所有クラス | queue | 容量 |
+| --- | --- | ---: |
+| `EspNowTransport` | 受信、送信要求、送信結果 | 各16件 |
+| `EspNowTransport` | 送信callback | 4件 |
+| `EspNowBroadcast` | NodeStatus通知 | 16件 |
+| `SequentialRangingController` | 高優先度制御送信 | 4件 |
+| `SequentialRangingController` | 測距結果などの低優先度送信 | 80件 |
+| `SequentialRangingController` | アプリケーション向け逐次結果 | 64件 |
+| `SequentialRangingController` | round summary | 4件 |
+
+容量超過や送信失敗は診断件数へ記録する。
+初期実装の画面はqueue診断件数を表示しない。
+
+### 19.3 画面とhealth表示
+
+ステータスバーはノードID、動作モード、バッテリー残量を表示する。
+逐次測距領域はrole、状態、時刻品質、最新roundのANCHOR・TAG、結果、距離、UWB RSSI、測距時間、最新summaryの受信件数・期待件数・timeout・欠損数、受信ノード先頭2件を表示する。
+RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗は通常表示より優先して保持表示する。
+master session変更時は旧measurementと旧summaryの表示保持を破棄する。
+
+### 19.4 late node同期
+
+masterは初回対象が0件の場合も同期完了として待機でき、その後に有効なNodeStatusを受信すると未追跡ノードをID昇順で同期対象へ追加する。
+既存ノードへ同じsession内で周期的な再同期は行わない。
+master変更時は全同期状態を破棄し、新sessionで全対象を3サンプルから同期し直す。
+
+### 19.5 実装済み、未実装、保留
+
+最小TAG選出、NTP四時刻同期、全非masterへのcommit、3 ANCHOR×2 TAGを含む逐次測距、逐次公開、round完了、基本timeout、master変更時resetは実装済みである。
+
+EKF、座標計算、アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧、同期期限による`SynchronizationExpired`への自動遷移、周期的再同期は未実装である。
+複数実機での無線順序、packet loss、queue飽和、時計ドリフト、画面視認性、NT-Shell同時操作、Wi-Fi省電力ON/OFFの時刻品質差は実機検証へ保留する。
+
+## 20. コーディング規約
 
 本実装で追加または変更するすべての関数へ、次の形式の日本語Doxygenコメントを付ける。
 
@@ -939,9 +1098,9 @@ NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーンを`m
 - 基本ファイル名は主要クラス名と一致させる
 - コールバック内で動的確保、画面出力、Serial出力、UWB処理を行わない
 
-## 20. 検証方針
+## 21. 検証方針
 
-### 20.1 単体検証
+### 21.1 単体検証
 
 時計と通信を差し替え可能にし、次をホストテストする。
 
@@ -968,7 +1127,7 @@ NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーンを`m
 - 最大パケットサイズが250バイト以内
 - Wi-Fi省電力設定の既定値がOFF
 
-### 20.2 ビルド検証
+### 21.2 ビルド検証
 
 M5StickS3環境でclean buildを行う。
 次のソースが実際にcompileされることを確認する。
@@ -983,7 +1142,7 @@ M5StickS3環境でclean buildを行う。
 - `ConfigRuntime.cpp`
 - `main.cpp`
 
-### 20.3 実機検証
+### 21.3 実機検証
 
 複数TAG確認の最低構成はTAG 2台とANCHOR 3台とする。
 
@@ -1004,7 +1163,7 @@ M5StickS3環境でclean buildを行う。
 - Wi-Fi省電力OFFで受信timestampが安定する
 - Wi-Fi省電力ONで時刻品質が低下状態として記録される
 
-## 21. 実装順序
+## 22. 実装順序
 
 実装は次の順序で行う。
 
@@ -1021,7 +1180,7 @@ M5StickS3環境でclean buildを行う。
 
 コード実装は本設計の確認後に開始する。
 
-## 22. 参考資料
+## 23. 参考資料
 
 - [ESP-IDF ESP-NOW API](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/network/esp_now.html)
 - [ESP32-S3 Wi-Fi Performance and Power Save](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-guides/wifi-driver/wifi-performance-and-power-save.html)

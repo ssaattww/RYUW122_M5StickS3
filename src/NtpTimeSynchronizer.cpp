@@ -422,7 +422,6 @@ void NtpTimeSynchronizer::DiscoverNewTargets()
                 target.macAddress,
                 status.macAddress,
                 sizeof(target.macAddress));
-            target.isFollowerTag = status.mode == EnRunMode::Tag;
             break;
         }
     }
@@ -609,8 +608,7 @@ void NtpTimeSynchronizer::HandleCommit(
 
     NtpSyncCommitPacket commit{};
     const NodeStatus& localStatus = m_broadcast.GetLocalStatus();
-    if (localStatus.mode != EnRunMode::Tag ||
-        !NtpTimeProtocolCodec::DecodeCommit(
+    if (!NtpTimeProtocolCodec::DecodeCommit(
             packet.payload,
             packet.payloadLength,
             commit) ||
@@ -781,7 +779,7 @@ void NtpTimeSynchronizer::FinalizeCurrentTarget()
         target.synchronization.channel = selected.channel;
         target.synchronization.timeQuality = selected.timeQuality;
         target.synchronization.isValid = true;
-        target.commitPending = target.isFollowerTag;
+        target.commitPending = true;
     }
     if (!target.commitPending)
     {

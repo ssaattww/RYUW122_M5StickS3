@@ -18,10 +18,10 @@
 
 ## 現在位置
 
-- 現在フェーズ: P5 アプリケーション統合
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008
-- 次タスク: T-009 統合テスト、M5StickS3 build、文書同期
-- 次タスク状態: T-009開始待ち
+- 現在フェーズ: P6 最終確認
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009
+- 次タスク: T-010 sol high最終レビューと必要修正
+- 次タスク状態: T-010開始待ち
 - ブランチ: `codex/multitag-sequential-ranging`
 
 ## タスク一覧
@@ -35,8 +35,8 @@
 | T-005 | P3 | RYUW122非同期測距API | L | T-001 | 完了 | `2c8b156` |
 | T-006 | P4 | 複数TAG測距プロトコルとcodec | M | T-003, T-004 | 完了 | `5d18194` |
 | T-007 | P4 | 最短周期の順次測距状態機械 | XL | T-004, T-005, T-006 | 完了 | `c28461e` + `7771fb1` |
-| T-008 | P5 | アプリケーション統合と逐次表示 | L | T-007 | 完了 | 本タスクのコミット |
-| T-009 | P5 | 統合テスト、M5StickS3 build、文書同期 | L | T-008 | 未着手 | 未作成 |
+| T-008 | P5 | アプリケーション統合と逐次表示 | L | T-007 | 完了 | `6ce3365` |
+| T-009 | P5 | 統合テスト、M5StickS3 build、文書同期 | L | T-008 | 完了 | 本タスクのコミット |
 | T-010 | P6 | sol high最終レビューと必要修正 | M | T-009 | 未着手 | 未作成 |
 
 ## タスク詳細
@@ -364,6 +364,27 @@
 - 設計と実装に既知の不一致がない。
 - 実機でしか確認できない項目が明記される。
 - T-009だけのコミットを作成する。
+
+統合検証finding:
+
+- T009-IF-001 Medium: ANCHORにもNTP同期確定通知を送り、自ノード時刻をマスター時刻へ変換できるようにする。
+
+通常レビューfinding:
+
+- T009-NR-001 Medium: 設計書のwire packet名、型、全field、サイズを実装と一致させる。
+- T009-NR-002 Low: NTP DoxygenをフォロワーTAG限定から全非マスターノード向けへ修正する。
+
+完了結果:
+
+- T009-IF-001、T009-NR-001、T009-NR-002はすべてresolved
+- production 6層直結の統合testで選出、全target NTP、3 ANCHOR×2 TAG、timeout、master交代、再同期を確認
+- PlatformIO native test 60/60成功
+- M5StickS3 clean/full build成功
+- RAM 68,112 / 327,680 bytes（20.8%）
+- Flash 1,232,811 / 3,342,336 bytes（36.9%）
+- `docs/feature-list.md`を追加し、M5Stack移植前提の機能・設定・境界・保留項目を整理
+- fix verification`pass_with_held`、新規findingなし
+- 実機3 ANCHOR×2 TAG、packet loss、queue飽和、clock drift、M5Stack各機種は保留
 
 ### T-010 sol high最終レビューと必要修正
 

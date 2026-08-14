@@ -163,21 +163,21 @@ namespace
     }
 
     /**
-     * @brief フォロワーTAGへtest用SyncCommitを受信させます。
+     * @brief 非マスターノードへtest用SyncCommitを受信させます。
      *
      * @param synchronizer 更新する同期状態機械
      * @param transport test用transport
      * @param masterStatus マスターTAG状態
-     * @param followerStatus フォロワーTAG状態
+     * @param targetStatus 同期対象ノード状態
      * @param sessionId マスターセッションID
-     * @param nodeMinusMasterUs follower時計からmaster時計へのoffset
+     * @param nodeMinusMasterUs 対象ノード時計からmaster時計へのoffset
      * @param synchronizedAtMasterTimeUs commit時のmaster 64bit時刻
      */
-    void ApplyFollowerCommit(
+    void ApplyNodeCommit(
         NtpTimeSynchronizer& synchronizer,
         EspNowTransport& transport,
         const NodeStatus& masterStatus,
-        const NodeStatus& followerStatus,
+        const NodeStatus& targetStatus,
         uint32_t sessionId,
         int64_t nodeMinusMasterUs,
         uint64_t synchronizedAtMasterTimeUs)
@@ -186,7 +186,7 @@ namespace
         TEST_ASSERT_TRUE(NtpTimeProtocolCodec::EncodeCommit(
             sessionId,
             4,
-            followerStatus.nodeID,
+            targetStatus.nodeID,
             nodeMinusMasterUs,
             10,
             EnTimeQuality::Synchronized,
@@ -194,7 +194,7 @@ namespace
             commit));
         EspNowReceivedPacket received{};
         memcpy(received.sourceMac, masterStatus.macAddress, 6);
-        memcpy(received.destinationMac, followerStatus.macAddress, 6);
+        memcpy(received.destinationMac, targetStatus.macAddress, 6);
         received.channel = 1;
         received.receivedTimestampUs = static_cast<uint32_t>(fakeTimeUs);
         received.payloadLength = sizeof(commit);
@@ -511,7 +511,7 @@ namespace
             config,
             GetFakeTimeUs);
 
-        ApplyFollowerCommit(
+        ApplyNodeCommit(
             synchronizer,
             transport,
             masterStatus,
@@ -536,7 +536,7 @@ namespace
             false);
         fakeTimeUs = 4801;
         synchronizer.Update();
-        ApplyFollowerCommit(
+        ApplyNodeCommit(
             synchronizer,
             transport,
             masterStatus,
@@ -577,7 +577,7 @@ namespace
             coordinator,
             config,
             GetFakeTimeUs);
-        ApplyFollowerCommit(
+        ApplyNodeCommit(
             synchronizer,
             transport,
             masterStatus,
@@ -625,7 +625,7 @@ namespace
             coordinator,
             config,
             GetFakeTimeUs);
-        ApplyFollowerCommit(
+        ApplyNodeCommit(
             synchronizer,
             transport,
             masterStatus,
@@ -649,6 +649,53 @@ namespace
         TEST_ASSERT_EQUAL_UINT64(
             elapsedUs,
             synchronization.synchronizationAgeUs);
+    }
+
+    /**
+     * @brief ANCHORがSyncCommitで同期完了しローカル時刻を変換できることを検証します。
+     */
+    void TestAnchorCommitCompletesSynchronizationAndConversion()
+    {
+        const NodeStatus masterStatus = MakeStatus(1, EnRunMode::Tag, 1);
+        const NodeStatus anchorStatus = MakeStatus(10, EnRunMode::Anchor, 10);
+        EspNowTransport transport;
+        EspNowBroadcast broadcast;
+        broadcast.SetLocalStatus(anchorStatus);
+        TagMasterCoordinator coordinator;
+        coordinator.SetMaster(
+            MakeMasterIdentity(masterStatus, 77),
+            false);
+        ConfigRuntime config;
+        fakeTimeUs = 5201;
+        NtpTimeSynchronizer synchronizer(
+            transport,
+            broadcast,
+            coordinator,
+            config,
+            GetFakeTimeUs);
+
+        synchronizer.Update();
+        TEST_ASSERT_FALSE(synchronizer.IsSynchronizationComplete());
+        ApplyNodeCommit(
+            synchronizer,
+            transport,
+            masterStatus,
+            anchorStatus,
+            77,
+            200,
+            5000);
+
+        TEST_ASSERT_TRUE(synchronizer.IsSynchronizationComplete());
+        NodeTimeSynchronization synchronization{};
+        TEST_ASSERT_TRUE(synchronizer.TryGetNodeSynchronization(
+            anchorStatus.nodeID,
+            synchronization));
+        TEST_ASSERT_EQUAL_INT64(200, synchronization.nodeMinusMasterUs);
+        uint64_t converted = 0;
+        TEST_ASSERT_TRUE(synchronizer.TryConvertLocalTimeToMaster(
+            5201,
+            converted));
+        TEST_ASSERT_EQUAL_UINT64(5001, converted);
     }
 
     /**
@@ -775,7 +822,7 @@ namespace
         TEST_ASSERT_TRUE(synchronizer.IsSynchronizationComplete());
         TEST_ASSERT_EQUAL_UINT32(
             NtpTimeSynchronizer::m_maxTargetCount *
-                NtpTimeSynchronizer::m_sampleCountPerNode,
+                (NtpTimeSynchronizer::m_sampleCountPerNode + 1U),
             transport.GetSentPackets().size());
         NodeTimeSynchronization synchronization{};
         TEST_ASSERT_FALSE(synchronizer.TryGetNodeSynchronization(
@@ -923,6 +970,7 @@ int main()
     RUN_TEST(TestFollowerCommitOffsetAndAge);
     RUN_TEST(TestFollowerCommitWrapConversion);
     RUN_TEST(TestFollowerMovingEpochReference);
+    RUN_TEST(TestAnchorCommitCompletesSynchronizationAndConversion);
     RUN_TEST(TestLateNodeDiscoveryAndNoResynchronization);
     RUN_TEST(TestLateNodeFilteringAndMaximum);
     RUN_TEST(TestForeignPacketsAreNotConsumed);

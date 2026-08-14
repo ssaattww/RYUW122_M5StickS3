@@ -81,7 +81,7 @@ public:
     /**
      * @brief 現在のマスターセッションについて同期処理が完了したか確認します。
      *
-     * @return 全対象処理済みまたはフォロワー同期済みの場合はtrue
+     * @return マスターで全対象処理済み、または非マスターで自ノード同期済みの場合はtrue
      */
     bool IsSynchronizationComplete() const;
 
@@ -112,7 +112,7 @@ public:
         uint64_t& masterTimeUs) const;
 
     /**
-     * @brief フォロワーTAG自身の32bitローカル時刻をマスター64bit時刻へ変換します。
+     * @brief 非マスターノード自身の32bitローカル時刻をマスター64bit時刻へ変換します。
      *
      * @param localTimeUs 自ノードの32bitローカル時刻
      * @param masterTimeUs 変換後のマスター64bit時刻格納先
@@ -207,7 +207,6 @@ private:
     {
         uint8_t nodeId = 0;
         uint8_t macAddress[6]{};
-        bool isFollowerTag = false;
         uint8_t attemptCount = 0;
         uint8_t validSampleCount = 0;
         NtpTimeSample samples[m_sampleCountPerNode]{};
@@ -298,7 +297,7 @@ private:
     void HandleResponse(const EspNowReceivedPacket& packet);
 
     /**
-     * @brief 受信した同期確定通知を検証してフォロワーの変換情報へ反映します。
+     * @brief 受信した同期確定通知を検証して自ノードの変換情報へ反映します。
      *
      * @param packet transportから取得した受信packet
      */
@@ -325,7 +324,7 @@ private:
     void FinalizeCurrentTarget();
 
     /**
-     * @brief フォロワーTAGへ採用済み同期情報を通知します。
+     * @brief 全非マスターノードへ採用済み同期情報を通知します。
      */
     void TrySendCommit();
 
