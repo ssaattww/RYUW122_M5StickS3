@@ -172,6 +172,25 @@ public:
         return true;
     }
 
+    /**
+     * @brief test用TAG測距応答payloadの登録を成功させます。
+     *
+     * @param payloadLength payload長
+     * @param data 登録するpayload
+     * @param timeout timeout時間ms
+     * @return 常にtrue
+     */
+    bool tagSendDataSync(
+        int payloadLength,
+        const char* data,
+        unsigned long timeout = 1000)
+    {
+        (void)payloadLength;
+        (void)data;
+        (void)timeout;
+        return true;
+    }
+
 private:
     RYUW122Mode m_mode = RYUW122Mode::ANCHOR;
     char m_networkId[9] = "UWB00001";

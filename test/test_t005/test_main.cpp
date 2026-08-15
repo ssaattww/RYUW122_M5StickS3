@@ -4,8 +4,10 @@
 #include "ConfigRuntime.h"
 #include "RYUW122.h"
 #include "Ryuw122Controller.h"
+#include "Ryuw122ResponseParser.h"
 
 #include <cstring>
+#include <climits>
 #include <deque>
 
 uint8_t RYUW122::m_lastTxPin = 0;
@@ -58,6 +60,9 @@ namespace
         char networkId[9] = "UWB00001";
         char address[9] = "A0000001";
         char startedTagAddress[9] = {};
+        char tagResponseData[13] = {};
+        bool tagResponseResult = true;
+        uint32_t tagResponseCount = 0;
         uint32_t m_beginCount = 0;
         uint32_t m_recoverCount = 0;
         uint32_t m_testCount = 0;
@@ -191,6 +196,24 @@ namespace
         }
 
         /**
+         * @brief test用TAG測距応答payloadを記録します。
+         *
+         * @param length payload長
+         * @param data 登録するpayload
+         * @return 設定済み登録結果
+         */
+        bool SetTagResponse(uint8_t length, const char* data) override
+        {
+            ++tagResponseCount;
+            if (data != nullptr && length < sizeof(tagResponseData))
+            {
+                memcpy(tagResponseData, data, length);
+                tagResponseData[length] = '\0';
+            }
+            return tagResponseResult;
+        }
+
+        /**
          * @brief test用測距開始結果と対象TAGを記録します。
          *
          * @param tagAddress 測距対象TAG
@@ -258,6 +281,16 @@ namespace
             m_responses.push_back(response);
         }
 
+        /**
+         * @brief test用の測距command受付応答をqueueへ追加します。
+         */
+        void QueueAcknowledgement()
+        {
+            Ryuw122PortResponse response{};
+            response.isAcknowledgement = true;
+            m_responses.push_back(response);
+        }
+
     private:
         std::deque<Ryuw122PortResponse> m_responses;
     };
@@ -299,6 +332,64 @@ namespace
         TEST_ASSERT_EQUAL_UINT32(
             secondValue,
             hardwareEvents[index].secondValue);
+    }
+
+    /**
+     * @brief 公式4 field応答とRSSI付き5 field応答をproduction parserで確認します。
+     */
+    void TestProductionParserAcceptsOfficialResponses()
+    {
+        Ryuw122PortResponse response{};
+        TEST_ASSERT_TRUE(Ryuw122ResponseParser::ParseAnchorResponse(
+            "+ANCHOR_RCV=T0000002,0,,123", response));
+        TEST_ASSERT_EQUAL_STRING("T0000002", response.tagAddress);
+        TEST_ASSERT_EQUAL_INT32(123, response.distanceCm);
+        TEST_ASSERT_EQUAL_INT16(0, response.uwbRssi);
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122RangingReason::Success),
+            static_cast<uint8_t>(response.reason));
+
+        TEST_ASSERT_TRUE(Ryuw122ResponseParser::ParseAnchorResponse(
+            "+ANCHOR_RCV=T0000002,3,abc,456 cm,-32768", response));
+        TEST_ASSERT_EQUAL_INT32(456, response.distanceCm);
+        TEST_ASSERT_EQUAL_INT16(INT16_MIN, response.uwbRssi);
+    }
+
+    /**
+     * @brief production parserがaddress、payload、距離、RSSIを厳密検証することを確認します。
+     */
+    void TestProductionParserRejectsMalformedResponses()
+    {
+        Ryuw122PortResponse response{};
+        TEST_ASSERT_FALSE(Ryuw122ResponseParser::ParseAnchorResponse(
+            "+ANCHOR_RCV=T000002,0,,1", response));
+        TEST_ASSERT_FALSE(Ryuw122ResponseParser::ParseAnchorResponse(
+            "+ANCHOR_RCV=T0000002,2,abc,1", response));
+        TEST_ASSERT_FALSE(Ryuw122ResponseParser::ParseAnchorResponse(
+            "+ANCHOR_RCV=T0000002,0,,429496730", response));
+        TEST_ASSERT_FALSE(Ryuw122ResponseParser::ParseAnchorResponse(
+            "+ANCHOR_RCV=T0000002,0,,1,32768", response));
+        TEST_ASSERT_FALSE(Ryuw122ResponseParser::ParseAnchorResponse(
+            "+ANCHOR_RCV=T0000002,0,,1 CM", response));
+        TEST_ASSERT_FALSE(Ryuw122ResponseParser::ParseAnchorResponse(
+            "+ANCHOR_RCV=T0000002,0,,1,-70,extra", response));
+    }
+
+    /**
+     * @brief production parserが+ERR codeを内部診断理由として保持することを確認します。
+     */
+    void TestProductionParserDistinguishesErrorResponse()
+    {
+        Ryuw122PortResponse response{};
+        TEST_ASSERT_TRUE(Ryuw122ResponseParser::ParseErrorResponse(
+            "+ERR=17", response));
+        TEST_ASSERT_FALSE(response.isSuccess);
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122RangingReason::ErrorResponse),
+            static_cast<uint8_t>(response.reason));
+        TEST_ASSERT_EQUAL_INT32(17, response.diagnosticCode);
+        TEST_ASSERT_FALSE(Ryuw122ResponseParser::ParseErrorResponse(
+            "+ERR=17x", response));
     }
 
     /**
@@ -541,6 +632,9 @@ namespace
             static_cast<uint8_t>(result.status));
         TEST_ASSERT_EQUAL_UINT32(10, result.startedAtUs);
         TEST_ASSERT_EQUAL_UINT32(10, result.completedAtUs);
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122RangingReason::StartFailure),
+            static_cast<uint8_t>(result.reason));
     }
 
     /**
@@ -567,6 +661,9 @@ namespace
         TEST_ASSERT_EQUAL_STRING("T0000002", result.tagAddress);
         TEST_ASSERT_EQUAL_UINT32(20, result.startedAtUs);
         TEST_ASSERT_EQUAL_UINT32(30, result.completedAtUs);
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122RangingReason::ParseError),
+            static_cast<uint8_t>(result.reason));
     }
 
     /**
@@ -594,6 +691,10 @@ namespace
             static_cast<uint8_t>(result.status));
         TEST_ASSERT_EQUAL_UINT32(100, result.startedAtUs);
         TEST_ASSERT_EQUAL_UINT32(300100, result.completedAtUs);
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122RangingReason::Timeout),
+            static_cast<uint8_t>(result.reason));
+        TEST_ASSERT_EQUAL_INT32(0, result.diagnosticCode);
         TEST_ASSERT_TRUE(controller.IsBusy());
         TEST_ASSERT_FALSE(controller.StartRanging("T0000003"));
 
@@ -601,6 +702,15 @@ namespace
         controller.Update();
         TEST_ASSERT_FALSE(controller.IsBusy());
         TEST_ASSERT_TRUE(controller.StartRanging("T0000003"));
+        port.QueueAcknowledgement();
+        controller.Update();
+        fakeTimeUs = 900100;
+        controller.Update();
+        TEST_ASSERT_TRUE(controller.TryTakeResult(result));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122RangingStatus::TimedOut),
+            static_cast<uint8_t>(result.status));
+        TEST_ASSERT_EQUAL_INT32(1, result.diagnosticCode);
     }
 
     /**
@@ -675,12 +785,35 @@ namespace
         Ryuw122Controller controller(port, config, GetFakeTimeUs);
         BeginController(controller);
 
+        TEST_ASSERT_EQUAL_UINT32(1U, port.tagResponseCount);
+        TEST_ASSERT_EQUAL_STRING("T", port.tagResponseData);
         TEST_ASSERT_FALSE(controller.StartRanging("T0000002"));
         TEST_ASSERT_EQUAL_UINT32(0, port.startCount);
     }
 
     /**
-     * @brief 実機adapterのG7 TX、G1 RX、115200bpsと空payload解析を検証します。
+     * @brief TAG測距応答payloadを登録できない場合に初期化を失敗させます。
+     */
+    void TestTagResponseFailureStopsInitialization()
+    {
+        ConfigRuntime config;
+        config.SetRunMode(EnRunMode::Tag);
+        FakeRyuw122Port port;
+        port.mode = EnRyuw122PortMode::Tag;
+        memcpy(port.address, "T0000001", sizeof(port.address));
+        port.tagResponseResult = false;
+        Ryuw122Controller controller(port, config, GetFakeTimeUs);
+
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(
+                EnRyuw122InitResult::TagResponseWriteFailed),
+            static_cast<uint8_t>(controller.Begin()));
+        TEST_ASSERT_FALSE(controller.IsReady());
+        TEST_ASSERT_EQUAL_UINT32(1U, port.tagResponseCount);
+    }
+
+    /**
+     * @brief 実機adapterのG7 TX、G1 RX、115200bpsと測距payloadを検証します。
      */
     void TestHardwarePortContract()
     {
@@ -698,10 +831,10 @@ namespace
         fakeTimeUs = 100;
         TEST_ASSERT_TRUE(controller.StartRanging("T0000002"));
         TEST_ASSERT_EQUAL_STRING(
-            "AT+ANCHOR_SEND=T0000002,0,\r\n",
+            "AT+ANCHOR_SEND=T0000002,1,A\r\n",
             serial.GetWritten().c_str());
         serial.InjectReceive(
-            "+OK\r\n+ANCHOR_RCV=T0000002,0,,42,-77\r\n");
+            "+OK\r\n+ANCHOR_RCV=T0000002,1,T,42,-77\r\n");
         fakeTimeUs = 200;
         controller.Update();
 
@@ -795,6 +928,10 @@ namespace
             static_cast<uint8_t>(EnRyuw122RangingStatus::Failed),
             static_cast<uint8_t>(result.status));
         TEST_ASSERT_EQUAL_STRING("T0000002", result.tagAddress);
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122RangingReason::ErrorResponse),
+            static_cast<uint8_t>(result.reason));
+        TEST_ASSERT_EQUAL_INT32(4, result.diagnosticCode);
         TEST_ASSERT_FALSE(controller.TryTakeResult(result));
     }
 
@@ -901,6 +1038,9 @@ int main()
 {
     UNITY_BEGIN();
     RUN_TEST(TestHardwareRecoverySequence);
+    RUN_TEST(TestProductionParserAcceptsOfficialResponses);
+    RUN_TEST(TestProductionParserRejectsMalformedResponses);
+    RUN_TEST(TestProductionParserDistinguishesErrorResponse);
     RUN_TEST(TestHardwarePortCommunicationRetrySequence);
     RUN_TEST(TestCommunicationRetrySucceeds);
     RUN_TEST(TestCommunicationRetryStopsAfterSecondFailure);
@@ -914,6 +1054,7 @@ int main()
     RUN_TEST(TestLateResponseDrain);
     RUN_TEST(TestBusyBoundary);
     RUN_TEST(TestAnchorModeBoundary);
+    RUN_TEST(TestTagResponseFailureStopsInitialization);
     RUN_TEST(TestHardwarePortContract);
     RUN_TEST(TestHardwarePortForeignThenActiveResponse);
     RUN_TEST(TestHardwarePortActiveThenForeignResponse);

@@ -142,6 +142,19 @@ bool SequentialRangingController::TryTakeCompletedRound(
     return true;
 }
 
+bool SequentialRangingController::TryTakeDiagnostic(
+    RangingDiagnosticEvent& event)
+{
+    if (m_diagnosticCount == 0U)
+    {
+        return false;
+    }
+    event = m_diagnosticQueue[m_diagnosticHead];
+    m_diagnosticHead = (m_diagnosticHead + 1U) % m_diagnosticQueueCapacity;
+    --m_diagnosticCount;
+    return true;
+}
+
 EnSequentialRangingState SequentialRangingController::GetState() const
 {
     return m_state;
@@ -230,6 +243,7 @@ void SequentialRangingController::ResetSessionState()
     m_lastCompletedRoundId = 0;
     m_nextPacketSequence = 0;
     m_anchorCommandReceivedUs = 0;
+    m_anchorRangingStarted = false;
     m_anchorListTruncated = false;
     m_tagListTruncated = false;
     m_measurementHead = 0;
@@ -238,6 +252,9 @@ void SequentialRangingController::ResetSessionState()
     m_roundHead = 0;
     m_roundTail = 0;
     m_roundCount = 0;
+    m_diagnosticHead = 0;
+    m_diagnosticTail = 0;
+    m_diagnosticCount = 0;
     m_highPriorityHead = 0;
     m_highPriorityTail = 0;
     m_highPriorityCount = 0;
@@ -370,15 +387,7 @@ void SequentialRangingController::HandleControl(
     m_lastControlPacketSequence = sequence;
     m_anchorCommandReceivedUs = packet.receivedTimestampUs;
     m_state = EnSequentialRangingState::AnchorRanging;
-    if (!StartCurrentAnchorRanging())
-    {
-        Ryuw122RangingResult failed{};
-        memcpy(failed.tagAddress, m_tags[m_tagIndex].uwbAddress, 9);
-        failed.status = EnRyuw122RangingStatus::Failed;
-        failed.startedAtUs = m_anchorCommandReceivedUs;
-        failed.completedAtUs = static_cast<uint32_t>(m_timeProvider());
-        CompleteAnchorMeasurement(failed);
-    }
+    m_anchorRangingStarted = false;
 }
 
 void SequentialRangingController::HandleMeasurement(
@@ -622,8 +631,30 @@ void SequentialRangingController::UpdateAnchor()
         m_ryuw122.TryTakeResult(result);
         return;
     }
+    if (!m_anchorRangingStarted)
+    {
+        // 現sessionで未開始の完了結果は旧session由来のため破棄します。
+        m_ryuw122.TryTakeResult(result);
+        if (m_ryuw122.IsBusy())
+        {
+            return;
+        }
+        if (!StartCurrentAnchorRanging())
+        {
+            Ryuw122RangingResult failed{};
+            memcpy(failed.tagAddress, m_tags[m_tagIndex].uwbAddress, 9);
+            failed.status = EnRyuw122RangingStatus::Failed;
+            failed.reason = EnRyuw122RangingReason::StartFailure;
+            failed.startedAtUs = m_anchorCommandReceivedUs;
+            failed.completedAtUs = static_cast<uint32_t>(m_timeProvider());
+            CompleteAnchorMeasurement(failed);
+            return;
+        }
+        m_anchorRangingStarted = true;
+    }
     if (m_ryuw122.TryTakeResult(result))
     {
+        m_anchorRangingStarted = false;
         CompleteAnchorMeasurement(result);
     }
 }
@@ -781,6 +812,7 @@ bool SequentialRangingController::StartCurrentAnchorRanging()
 void SequentialRangingController::CompleteAnchorMeasurement(
     const Ryuw122RangingResult& result)
 {
+    PushRangingDiagnostic(result);
     RangeMeasurementData measurement{};
     measurement.roundId = m_roundId;
     measurement.pairSequence = static_cast<uint16_t>(
@@ -834,17 +866,11 @@ void SequentialRangingController::CompleteAnchorMeasurement(
     {
         ++m_tagIndex;
         m_anchorCommandReceivedUs = static_cast<uint32_t>(m_timeProvider());
-        if (!StartCurrentAnchorRanging())
-        {
-            Ryuw122RangingResult failed{};
-            memcpy(failed.tagAddress, m_tags[m_tagIndex].uwbAddress, 9);
-            failed.status = EnRyuw122RangingStatus::Failed;
-            failed.startedAtUs = m_anchorCommandReceivedUs;
-            failed.completedAtUs = static_cast<uint32_t>(m_timeProvider());
-            CompleteAnchorMeasurement(failed);
-        }
+        m_anchorRangingStarted = false;
+        UpdateAnchor();
         return;
     }
+    m_anchorRangingStarted = false;
     m_state = EnSequentialRangingState::AnchorIdle;
 }
 
@@ -1097,6 +1123,31 @@ bool SequentialRangingController::PushRoundSummary(
     m_roundQueue[m_roundTail] = summary;
     m_roundTail = (m_roundTail + 1U) % m_roundQueueCapacity;
     ++m_roundCount;
+    return true;
+}
+
+bool SequentialRangingController::PushRangingDiagnostic(
+    const Ryuw122RangingResult& result)
+{
+    if (m_diagnosticCount >= m_diagnosticQueueCapacity ||
+        m_anchorIndex >= m_anchorCount || m_tagIndex >= m_tagCount)
+    {
+        return false;
+    }
+    RangingDiagnosticEvent& event = m_diagnosticQueue[m_diagnosticTail];
+    event = RangingDiagnosticEvent{};
+    memcpy(event.tagAddress, result.tagAddress, sizeof(event.tagAddress));
+    event.reason = result.reason;
+    event.distanceMm = result.status == EnRyuw122RangingStatus::Success
+        ? result.distanceMm
+        : 0U;
+    event.durationMs = static_cast<uint32_t>(
+        result.completedAtUs - result.startedAtUs) / 1000U;
+    event.diagnosticCode = result.diagnosticCode;
+    event.anchorId = m_anchors[m_anchorIndex].nodeId;
+    event.tagId = m_tags[m_tagIndex].nodeId;
+    m_diagnosticTail = (m_diagnosticTail + 1U) % m_diagnosticQueueCapacity;
+    ++m_diagnosticCount;
     return true;
 }
 

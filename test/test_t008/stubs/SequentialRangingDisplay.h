@@ -17,10 +17,11 @@
  */
 struct SequentialRangingDisplaySnapshot
 {
-    static constexpr size_t m_maxAnchorResultCount = 8U;
-    static constexpr size_t m_visibleNodeCount = 3U;
+    static constexpr size_t m_maxAnchorResultCount = 5U;
+    static constexpr size_t m_visibleNodeCount = 5U;
 
-    TimedRangeMeasurement m_anchorMeasurements[m_maxAnchorResultCount]{};
+    TimedRangeMeasurement m_successMeasurements[m_maxAnchorResultCount]{};
+    TimedRangeMeasurement m_failureMeasurements[m_maxAnchorResultCount]{};
     NodeStatus m_receivedNodes[m_visibleNodeCount]{};
     EnSequentialRangingState m_state =
         EnSequentialRangingState::WaitingForMaster;
@@ -29,7 +30,8 @@ struct SequentialRangingDisplaySnapshot
     EnRunMode m_mode = EnRunMode::Anchor;
     uint64_t m_currentMasterTimeUs = 0;
     uint8_t m_nodeId = 0;
-    size_t m_anchorMeasurementCount = 0;
+    size_t m_successMeasurementCount = 0;
+    size_t m_failureMeasurementCount = 0;
     size_t m_receivedNodeCount = 0;
     bool m_transportStarted = false;
     bool m_broadcastStarted = false;
@@ -97,14 +99,16 @@ private:
     static constexpr int m_statusBarHeight = 20;
     static constexpr int m_contentLeft = 4;
     static constexpr int m_firstLineY = 23;
-    static constexpr int m_lineHeight = 12;
+    static constexpr int m_lineHeight = 10;
     static constexpr size_t m_visibleNodeCount =
         SequentialRangingDisplaySnapshot::m_visibleNodeCount;
     static constexpr size_t m_maxAnchorResultCount =
         SequentialRangingDisplaySnapshot::m_maxAnchorResultCount;
-    static constexpr int m_tagResultFirstLineIndex = 2;
-    static constexpr int m_receivedNodeHeaderLineIndex = 10;
-    static constexpr float m_tagResultTextScaleX = 1.0F;
+    static constexpr int m_successHeaderLineIndex = 2;
+    static constexpr int m_successFirstLineIndex = 3;
+    static constexpr int m_failureHeaderLineIndex = 8;
+    static constexpr int m_failureFirstLineIndex = 9;
+    static constexpr int m_receivedNodeHeaderLineIndex = 14;
     static constexpr uint64_t m_masterTimeModuloSeconds = 1000000U;
 
     /**
@@ -132,7 +136,7 @@ private:
      * @param status 測距結果状態
      * @return 結果の短縮表示名
      */
-    static const char* GetResultName(EnRangeResultStatus status);
+    static const char* GetFailureName(EnRangeResultStatus status);
 
     /**
      * @brief 時刻品質の短縮表示名を取得します。
@@ -153,15 +157,6 @@ private:
         uint32_t distanceMm,
         char* text,
         size_t textSize);
-
-    /**
-     * @brief 測距結果が有効なマスターTAG基準計測時刻を持つか確認します。
-     *
-     * @param measurement 確認する測距結果
-     * @return 時刻変換済みの品質である場合はtrue
-     */
-    static bool HasValidMeasurementMasterTime(
-        const TimedRangeMeasurement& measurement);
 
     /**
      * @brief 初期化失敗の有無を確認します。
@@ -191,6 +186,27 @@ private:
     bool StoreTagMeasurement(const TimedRangeMeasurement& measurement);
 
     /**
+     * @brief 成功結果をANCHOR ID昇順のlast-success一覧へ保存します。
+     * @param measurement 保存する成功結果
+     * @return 一覧を更新した場合はtrue
+     */
+    bool StoreSuccessMeasurement(const TimedRangeMeasurement& measurement);
+
+    /**
+     * @brief 失敗結果をANCHOR ID昇順のcurrent failure一覧へ保存します。
+     * @param measurement 保存する失敗結果
+     * @return 一覧を更新した場合はtrue
+     */
+    bool StoreFailureMeasurement(const TimedRangeMeasurement& measurement);
+
+    /**
+     * @brief 指定ANCHORのcurrent failureを成功時に解除します。
+     * @param anchorId 解除するANCHOR ID
+     * @return failureを解除した場合はtrue
+     */
+    bool RemoveFailureMeasurement(uint8_t anchorId);
+
+    /**
      * @brief 保持中のANCHOR別結果を破棄します。
      */
     void ClearTagMeasurements();
@@ -203,7 +219,7 @@ private:
     bool UpdateCurrentMasterTime();
 
     /**
-     * @brief NodeStatus一覧の先頭3件を描画します。
+     * @brief NodeStatus一覧の先頭5件を描画します。
      */
     void DrawReceivedNodes(const SequentialRangingDisplaySnapshot& snapshot);
 
@@ -211,14 +227,16 @@ private:
     EspNowBroadcast& m_broadcast;
     NtpTimeSynchronizer& m_timeSynchronizer;
     M5Canvas& m_canvas;
-    TimedRangeMeasurement m_anchorMeasurements[m_maxAnchorResultCount]{};
+    TimedRangeMeasurement m_successMeasurements[m_maxAnchorResultCount]{};
+    TimedRangeMeasurement m_failureMeasurements[m_maxAnchorResultCount]{};
     EnSequentialRangingState m_latestState =
         EnSequentialRangingState::WaitingForMaster;
     EnRyuw122InitResult m_ryuw122Result = EnRyuw122InitResult::Ok;
     EnTimeQuality m_latestTimeQuality = EnTimeQuality::Unsynchronized;
     uint64_t m_currentMasterTimeUs = 0;
     uint32_t m_latestResetGeneration = 0;
-    size_t m_anchorMeasurementCount = 0;
+    size_t m_successMeasurementCount = 0;
+    size_t m_failureMeasurementCount = 0;
     bool m_transportStarted = false;
     bool m_broadcastStarted = false;
     bool m_hasCurrentMasterTime = false;

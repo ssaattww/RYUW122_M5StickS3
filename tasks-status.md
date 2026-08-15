@@ -18,10 +18,10 @@
 
 ## 現在位置
 
-- 現在フェーズ: なし
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013, T-014, T-015
+- 現在フェーズ: なし（P12完了）
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013, T-014, T-015, T-016
 - 次タスク: なし
-- 次タスク状態: 全タスク完了
+- 次タスク状態: なし
 - ブランチ: `codex/display-three-nodes-tag-results`
 
 ## タスク一覧
@@ -43,6 +43,7 @@
 | T-013 | P9 | 接続先3件とTAG全ANCHOR測距結果・統一時刻の画面表示 | M | T-012 | 完了 | 本タスクのコミット |
 | T-014 | P10 | NTP時計基準統一と定期再同期 | M | T-004, T-013 | 完了 | 本タスクのコミット |
 | T-015 | P11 | 測距処理と画面描画のFreeRTOSタスク分離 | L | T-014 | 完了 | 本タスクのコミット |
+| T-016 | P12 | RYUW122実応答解析と失敗別枠表示 | M | T-015 | 完了 | 本タスクのコミット |
 
 ## タスク詳細
 
@@ -638,6 +639,59 @@
 - M5StickS3 build使用量はRAM 68,808 / 327,680 bytes、Flash 1,236,167 / 3,342,336 bytesである。
 - 実機のtask scheduling、sprite転送中の測距継続、`RANGE`解除体感、stack余裕、Wi-Fi/UWB実通信は保留する。
 
+### T-016 RYUW122実応答解析と失敗別枠表示
+
+変更対象:
+
+- `include/Ryuw122Controller.h`
+- `src/Ryuw122Controller.cpp`
+- `include/SequentialRangingDisplay.h`
+- `src/SequentialRangingDisplay.cpp`
+- `include/RangingDisplayTaskController.h`
+- `src/RangingDisplayTaskController.cpp`
+- `src/main.cpp`
+- `platformio.ini`
+- 関連host testと設計文書
+
+実施内容:
+
+- RSSI省略と`cm`付き距離を含むRYUW122実応答を解析する。
+- 成功距離5件、未解消失敗5件、NodeStatus 5件を独立した画面領域へ表示する。
+- 成功距離は後続失敗で上書きせず、次回成功時に同ANCHORの失敗表示を解除する。
+- 失敗欄へANCHOR ID、失敗種別、測距所要時間を表示する。
+- NT-Shellはビルド時切替とし、通常buildでは有効、診断buildでは無効にする。
+- NT-Shell有効時はステータスバーへ状態を表示する。
+- 診断buildでは測距taskをブロックしない固定長queue経由で測距結果をSerialへ1行出力し、`plink`で実機原因を確認する。
+
+完了条件:
+
+- RSSIあり・なし、数値距離・`cm`付き距離の正常応答をhost testで確認できる。
+- 距離成功5件、失敗5件、NodeStatus 5件が135×240画面内に収まる。
+- 失敗後も最後の成功距離を保持し、次回成功で同ANCHORの失敗表示が消える。
+- 通常buildはNT-Shell有効、診断buildはNT-Shell無効かつ測距診断出力有効である。
+- 測距診断のSerial出力を高優先度測距taskで直接実行しない。
+- `plink`で実機ログを採取し、FAIL原因と実測時間を記録する。
+- focused test、全native test、通常・診断M5StickS3 buildが成功する。
+- 通常レビューの必須修正findingが解消される。
+
+通常レビューfinding:
+
+- T016-NR-001 Medium: masterまたはsession切替cycleで旧RYUW122結果と新controlが重なっても、新sessionのANCHOR測距を恒久停止させない。
+- T016-NR-002 Low: NodeStatus表示上限5件とDoxygenおよびtest名を一致させる。
+- T016-NR-003 Low: 実装reportを最終test、build、実機検証証拠へ同期する。
+
+結果:
+
+- RYUW122応答parserはRSSIあり・なし、数値距離・`cm`付き距離、`+ERR`を解析し、ESP-NOW wire packetの117 bytesを変更していない。
+- TAG初期化時に`AT+TAG_SEND=1,T`を登録し、ANCHOR測距を`AT+ANCHOR_SEND=<TAG>,1,A`へそろえた。
+- timeout後のdrain Busy中は次roundを保留し、同一pairのUART commandを重複送信しない。timeoutは`+OK`未観測を`CODE=0`、観測済みを`CODE=1`として診断できる。
+- TAG画面は成功距離5件、現在の失敗5件、NodeStatus 5件を独立表示し、成功値を後続失敗で消さず、次回成功で同ANCHORの失敗を解除する。
+- 通常buildはNT-Shellを有効にしてステータスバーへ`SH`を表示し、診断buildはNT-Shellを無効にして固定長queue経由の1行診断を低優先度taskから出力する。
+- COM10のTAG ID0とCOM7のANCHOR ID1へ診断buildを書き込み、修正前の`START`連発と300ms timeoutが、修正後は連続`OK`へ変わることを確認した。距離は340から950mm、所要時間は主に64から66ms、最短56msで、観測区間に`START`、`TIMEOUT`、`ERR`、`PARSE`はなかった。
+- focused test 29/29、全native test 105/105、通常・診断M5StickS3 clean/full build、`git diff --check`が成功した。通常版はRAM 69,200 bytes、Flash 1,238,411 bytes、診断版はRAM 69,176 bytes、Flash 1,228,183 bytesである。
+- T016-NR-001からT016-NR-003はすべてresolvedで、fix verificationは`pass_with_held`、新規findingとunexploredはない。
+- 実装、通常レビュー、review follow-up、fix verificationの証跡は`reports/T-016-ryuw-parser-display-diagnostics-implementation.md`、`reports/T-016-ryuw-parser-display-diagnostics-normal-review.md`、`reports/T-016-normal-review-fix-implementation.md`、`reports/T-016-normal-review-fix-verification.md`へ保存した。
+
 ## 実機保留項目
 
 次はコードとbuildだけでは完了判定できないため、対応する実機が揃うまで保留として扱う。
@@ -650,3 +704,8 @@
 - Wi-Fi Power Save ON/OFFによる受信timestamp品質差
 - GPIO8とRYUW122 NRSTの実配線、電圧、立上り、UARTウェッジからの実復旧
 - mode変更後2秒待機による実機AT通信成功と起動体感
+- masterまたはsession切替時に旧RYUW122結果とtimeout drainが同時発生する実機境界
+- 成功5件・失敗5件・NodeStatus 5件とNT-Shell有効表示`SH`の実画面視認性
+- 診断eventおよびtask間queueが実機高負荷で飽和した場合の挙動
+- `ERR`、`PARSE`、実UART投入`START`、timeout `CODE=0/1`の各失敗診断経路
+- current HEADに一致するremote CI runがなく、repository固有Markdown lint配線も存在しないこと

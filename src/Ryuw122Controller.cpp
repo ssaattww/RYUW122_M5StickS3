@@ -1,14 +1,12 @@
 #include "Ryuw122Controller.h"
 
 #include "ConfigRuntime.h"
+#include "Ryuw122ResponseParser.h"
 
 #include <Arduino.h>
 #include <RYUW122.h>
 
-#include <cerrno>
-#include <climits>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 
 namespace
@@ -56,149 +54,6 @@ namespace
     bool IsValidAddress(const char* address)
     {
         return address != nullptr && strlen(address) == 8U;
-    }
-
-    /**
-     * @brief 区切り位置までの文字列を固定長領域へコピーします。
-     *
-     * @param begin コピー開始位置
-     * @param end コピー終了位置
-     * @param destination コピー先
-     * @param destinationSize コピー先のbyte数
-     * @return 文字列がコピー先へ収まった場合はtrue、それ以外はfalse
-     */
-    bool CopyField(
-        const char* begin,
-        const char* end,
-        char* destination,
-        size_t destinationSize)
-    {
-        if (begin == nullptr || end == nullptr || end < begin ||
-            destination == nullptr || destinationSize == 0U)
-        {
-            return false;
-        }
-
-        const size_t length = static_cast<size_t>(end - begin);
-        if (length >= destinationSize)
-        {
-            return false;
-        }
-
-        memcpy(destination, begin, length);
-        destination[length] = '\0';
-        return true;
-    }
-
-    /**
-     * @brief 10進整数fieldを範囲検査付きで解析します。
-     *
-     * @param begin field開始位置
-     * @param end field終了位置
-     * @param minimum 許容する最小値
-     * @param maximum 許容する最大値
-     * @param value 解析結果の格納先
-     * @return 範囲内の整数を解析できた場合はtrue、それ以外はfalse
-     */
-    bool ParseIntegerField(
-        const char* begin,
-        const char* end,
-        long minimum,
-        long maximum,
-        long& value)
-    {
-        char field[16] = {};
-        if (!CopyField(begin, end, field, sizeof(field)) || field[0] == '\0')
-        {
-            return false;
-        }
-
-        errno = 0;
-        char* parsedEnd = nullptr;
-        const long parsed = strtol(field, &parsedEnd, 10);
-        if (errno == ERANGE || parsedEnd == field || *parsedEnd != '\0' ||
-            parsed < minimum || parsed > maximum)
-        {
-            return false;
-        }
-
-        value = parsed;
-        return true;
-    }
-
-    /**
-     * @brief ANCHOR受信行を空payload対応で解析します。
-     *
-     * @param line 解析する受信行
-     * @param response 解析結果の格納先
-     * @return 妥当な測距応答を解析できた場合はtrue、それ以外はfalse
-     */
-    bool ParseAnchorResponse(
-        const char* line,
-        Ryuw122PortResponse& response)
-    {
-        constexpr char Prefix[] = "+ANCHOR_RCV=";
-        constexpr size_t PrefixLength = sizeof(Prefix) - 1U;
-        if (line == nullptr || strncmp(line, Prefix, PrefixLength) != 0)
-        {
-            return false;
-        }
-
-        const char* fields[5] = {line + PrefixLength, nullptr, nullptr, nullptr, nullptr};
-        const char* fieldEnds[5] = {};
-        const char* cursor = fields[0];
-        for (size_t index = 0; index < 4U; ++index)
-        {
-            const char* comma = strchr(cursor, ',');
-            if (comma == nullptr)
-            {
-                return false;
-            }
-            fieldEnds[index] = comma;
-            fields[index + 1U] = comma + 1;
-            cursor = comma + 1;
-        }
-        fieldEnds[4] = line + strlen(line);
-
-        char tagAddress[9] = {};
-        long payloadLength = 0;
-        long distanceCm = 0;
-        long uwbRssi = 0;
-        if (!CopyField(
-                fields[0],
-                fieldEnds[0],
-                tagAddress,
-                sizeof(tagAddress)) ||
-            !IsValidAddress(tagAddress) ||
-            !ParseIntegerField(
-                fields[1],
-                fieldEnds[1],
-                0,
-                RYUW122_MAX_PAYLOAD_LENGTH,
-                payloadLength) ||
-            static_cast<size_t>(fieldEnds[2] - fields[2]) !=
-                static_cast<size_t>(payloadLength) ||
-            !ParseIntegerField(
-                fields[3],
-                fieldEnds[3],
-                0,
-                static_cast<long>(UINT32_MAX / 10U),
-                distanceCm) ||
-            !ParseIntegerField(
-                fields[4],
-                fieldEnds[4],
-                INT16_MIN,
-                INT16_MAX,
-                uwbRssi))
-        {
-            return false;
-        }
-
-        memcpy(response.tagAddress, tagAddress, sizeof(response.tagAddress));
-        response.isSuccess = true;
-        response.distanceCm = static_cast<int32_t>(distanceCm);
-        response.uwbRssi = static_cast<int16_t>(uwbRssi);
-        return true;
     }
 
     /**
@@ -339,6 +194,19 @@ namespace
         }
 
         /**
+         * @brief RYUW122へTAG測距応答payloadを登録します。
+         *
+         * @param length payload長
+         * @param data 登録するpayload
+         * @return 登録できた場合はtrue、それ以外はfalse
+         */
+        bool SetTagResponse(uint8_t length, const char* data) override
+        {
+            return m_ryuw122.tagSendDataSync(
+                static_cast<int>(length), data);
+        }
+
+        /**
          * @brief 待機を伴うライブラリ送信を使わず測距コマンドをUARTへ投入します。
          *
          * @param tagAddress 測距対象の8文字TAGアドレス
@@ -355,7 +223,7 @@ namespace
             const int commandLength = snprintf(
                 command,
                 sizeof(command),
-                "AT+ANCHOR_SEND=%s,0,\r\n",
+                "AT+ANCHOR_SEND=%s,1,A\r\n",
                 tagAddress);
             if (commandLength <= 0 ||
                 commandLength >= static_cast<int>(sizeof(command)) ||
@@ -457,23 +325,30 @@ namespace
         }
 
         /**
-         * @brief RYUW122の受信行から測距応答または失敗応答を保存します。
+         * @brief RYUW122の受信行からcommand受付または測距応答を保存します。
          *
          * @param line 処理する受信行
          */
         void ProcessLine(const char* line)
         {
             Ryuw122PortResponse response{};
-            if (ParseAnchorResponse(line, response))
+            if (strcmp(line, "+OK") == 0)
+            {
+                response.isAcknowledgement = true;
+                EnqueueResponse(response);
+                return;
+            }
+            if (Ryuw122ResponseParser::ParseAnchorResponse(line, response) ||
+                Ryuw122ResponseParser::ParseErrorResponse(line, response))
             {
                 EnqueueResponse(response);
                 return;
             }
 
-            if (strncmp(line, "+ANCHOR_RCV=", 12U) == 0 ||
-                strncmp(line, "+ERR", 4U) == 0 ||
-                strncmp(line, "+ERROR", 6U) == 0)
+            if (Ryuw122ResponseParser::IsAnchorResponseLine(line) ||
+                strncmp(line, "+ERR", 4U) == 0)
             {
+                response.reason = EnRyuw122RangingReason::ParseError;
                 EnqueueResponse(response);
             }
         }
@@ -527,6 +402,7 @@ EnRyuw122InitResult Ryuw122Controller::Begin()
     m_isReady = false;
     m_hasResult = false;
     m_rangingState = EnRangingState::Idle;
+    m_commandAcknowledged = false;
     memset(m_activeTagAddress, 0, sizeof(m_activeTagAddress));
     memset(m_drainTagAddress, 0, sizeof(m_drainTagAddress));
 
@@ -550,7 +426,9 @@ void Ryuw122Controller::Update()
             EnRyuw122RangingStatus::TimedOut,
             0,
             0,
-            nowUs);
+            nowUs,
+            EnRyuw122RangingReason::Timeout,
+            m_commandAcknowledged ? 1 : 0);
         BeginLateResponseDrain(nowUs);
     }
     else if (m_rangingState == EnRangingState::DrainingLateResponse &&
@@ -567,6 +445,14 @@ void Ryuw122Controller::Update()
     Ryuw122PortResponse response{};
     while (m_port->TryTakeResponse(response))
     {
+        if (response.isAcknowledgement)
+        {
+            if (m_rangingState == EnRangingState::WaitingForResponse)
+            {
+                m_commandAcknowledged = true;
+            }
+            continue;
+        }
         const bool hasAddress = response.tagAddress[0] != '\0';
         if (m_rangingState == EnRangingState::DrainingLateResponse)
         {
@@ -593,7 +479,9 @@ void Ryuw122Controller::Update()
                 EnRyuw122RangingStatus::Failed,
                 0,
                 0,
-                completedAtUs);
+                completedAtUs,
+                response.reason,
+                response.diagnosticCode);
         }
         else
         {
@@ -601,7 +489,8 @@ void Ryuw122Controller::Update()
                 EnRyuw122RangingStatus::Success,
                 static_cast<uint32_t>(response.distanceCm) * 10U,
                 response.uwbRssi,
-                completedAtUs);
+                completedAtUs,
+                EnRyuw122RangingReason::Success);
         }
     }
 }
@@ -616,6 +505,7 @@ bool Ryuw122Controller::StartRanging(const char* tagAddress)
 
     memcpy(m_activeTagAddress, tagAddress, sizeof(m_activeTagAddress));
     m_rangingStartedAtUs = m_timeProvider();
+    m_commandAcknowledged = false;
     m_rangingState = EnRangingState::WaitingForResponse;
     if (!m_port->StartRanging(tagAddress))
     {
@@ -623,7 +513,8 @@ bool Ryuw122Controller::StartRanging(const char* tagAddress)
             EnRyuw122RangingStatus::Failed,
             0,
             0,
-            m_timeProvider());
+            m_timeProvider(),
+            EnRyuw122RangingReason::StartFailure);
     }
     return true;
 }
@@ -664,7 +555,9 @@ void Ryuw122Controller::CompleteRanging(
     EnRyuw122RangingStatus status,
     uint32_t distanceMm,
     int16_t uwbRssi,
-    uint32_t completedAtUs)
+    uint32_t completedAtUs,
+    EnRyuw122RangingReason reason,
+    int32_t diagnosticCode)
 {
     memset(&m_result, 0, sizeof(m_result));
     memcpy(
@@ -676,7 +569,10 @@ void Ryuw122Controller::CompleteRanging(
     m_result.uwbRssi = uwbRssi;
     m_result.startedAtUs = m_rangingStartedAtUs;
     m_result.completedAtUs = completedAtUs;
+    m_result.reason = reason;
+    m_result.diagnosticCode = diagnosticCode;
     m_hasResult = true;
+    m_commandAcknowledged = false;
     m_rangingState = EnRangingState::Idle;
     memset(m_activeTagAddress, 0, sizeof(m_activeTagAddress));
 }

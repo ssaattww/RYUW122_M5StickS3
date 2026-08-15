@@ -3,7 +3,7 @@
 ## 対象と構成
 
 本プロジェクトはM5StickS3とRYUW122を1ノードとして、複数TAGと複数ANCHORをESP-NOWで連携し、UWB測距を順次実行する。
-現在のPlatformIO対象は`m5stack-sticks3`で、画面と電源管理はM5Unifiedを使用する。
+現在のPlatformIO実機対象は通常版`m5stack-sticks3`と診断版`m5stack-sticks3-diagnostic`で、画面と電源管理はM5Unifiedを使用する。
 M5Stack系へ移植する場合はM5Unifiedの共通APIを維持しつつ、board環境、表示領域、UARTのG7 TX・G1 RX割り当て、電源構成を対象機に合わせて確認する。
 
 アプリケーションは次の層で構成する。
@@ -62,35 +62,39 @@ NRSTはGPIO8へ接続する。起動時はUART初期化後にNRSTをLOWで200ms�
 UART開始、NRST復旧、AT疎通確認、mode、network ID、address設定は`Ryuw122Initializer`へ集約する。
 modeを書き換えた場合はRYUW122の応答停止期間を避けるため、次のATコマンドまで2秒待機する。modeが既に一致する場合は追加待機しない。
 network IDは`UWB00001`、UWBアドレスはroleとnode IDから`T0000001`または`A0000010`のように生成する。
+TAG初期化時は`TAG_SEND`で1 byteの`T`を測距応答payloadとして登録し、ANCHORは1 byteの`A`を付けて非同期測距を開始する。
+測距応答は`+ANCHOR_RCV=<addr>,<len>,<data>,<distance>`と末尾RSSI付きの両形式を受理する。距離は純数値または空白に続く`cm`を許可し、8文字address、payload長、距離範囲、RSSI範囲は厳密に検証する。
+`+ERR=<n>`、応答parse失敗、UART投入失敗、300ms timeoutは内部診断理由として区別するが、ESP-NOW wireでは既存の`FAIL`または`TIMEOUT`を維持する。timeout後の遅延応答排出中は次の測距開始を保留し、`Busy`を`START`失敗として公開せず、同一ANCHOR・TAGのUART commandを重複送信しない。timeout診断の`CODE=0`は`+OK`未観測、`CODE=1`は`+OK`観測後に測距完了応答なしを表す。
 
 ## 画面
 
 画面には次を表示する。
 
-- ステータスバー: node ID、mode、バッテリー残量
+- ステータスバー: node ID、mode、通常版の`SH`表示、バッテリー残量
 - 逐次状態: master・follower・ANCHOR、待機・同期・測距状態、時刻品質
 - TAGの現在時刻: master基準現在秒。masterは単調時刻provider、followerは同期済みローカル現在時刻から取得し、未同期時は`NOW UNSYNC`とする
-- TAGのANCHOR別最新測距: 自TAG向け結果だけを最大8件、ANCHOR ID昇順で表示する。各行は距離または失敗statusと、master基準の計測完了秒を含む
-- 受信ノード: `NodeMap`の先頭3件のID、role、座標
+- TAGのANCHOR別last-success: 自TAG向け成功結果だけを最大5件、ANCHOR ID昇順で表示する
+- TAGのANCHOR別current failure: 自TAG向けの現在失敗だけを最大5件、ANCHOR ID昇順でANCHOR ID、`FAIL`または`TIME`、duration msとして表示する
+- 受信ノード: `NodeMap`の先頭5件のID、role、座標
 - 起動health: RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗
 
 master TAGが収集した他TAG向け結果は一覧へ入れず、follower TAGでは自TAG向け転送結果を表示する。
 画面上の統一時刻は、現在のmaster基準時刻を意味する。
-成功距離は値に応じてmm、m、kmへ短縮し、失敗は`FAIL`、`TIMEOUT`、`MISS`で区別する。
-計測時刻は現在時刻と共通の6桁master秒moduloで表示し、距離表示の横幅を優先する。
-時刻品質が`Synchronized`、`PowerSaveEnabled`、`ReceiveTimestampUnavailable`なら0秒を含め有効とし、`SynchronizationExpired`、`Unsynchronized`、未知値では`@UNSYNC`を表示する。
-ANCHORではTAG専用の現在時刻と距離一覧を表示しない。
+成功距離は値に応じてmm、m、kmへ短縮する。後続の失敗はlast-successを上書きせず、同じANCHORの次回成功時にcurrent failureだけを解除する。
 表示eventの取り込み、固定長一覧保持、TAGとANCHORの表示判断、描画は`SequentialRangingDisplay`へ集約する。
 高優先度タスクは容量1の固定長snapshot queueを上書きし、低優先度タスクはcontroller、broadcast、NTPのFIFOへ直接触れずに最新snapshotだけを描画する。
 画面転送中も高優先度測距タスクは継続し、ANCHORの測距完了時は`AnchorIdle`を含む最新状態を次のsnapshotへ反映する。
 この表示分離はRYUW122の300ms timeoutを変更しない。
-taskまたはsnapshot queueの作成に失敗した場合は部分生成物を破棄し、`TASK START FAILED`をM5画面へ永続表示する。
-M5StickS3の135×240 pixel画面では、現在時刻をY座標35、最大8 ANCHOR結果をY座標47から131、受信ノード3件をY座標155、167、179へ描画する。
-ANCHOR結果行は通常文字倍率で、最大ID・距離・status・6桁秒を135 pixel幅内へ収める。
+task、snapshot queue、診断queueの作成に失敗した場合は部分生成物を破棄し、`TASK START FAILED`をM5画面へ永続表示する。
+M5StickS3の135×240 pixel画面ではline heightを10 pixelとし、`SEQ`、`NOW`、成功headerと最大5行、失敗headerと最大5行、NodeStatus headerと最大5行をY=23から213へ描画する。
+各結果行は通常文字倍率で135 pixel幅内へ収める。
 
 ## NT-ShellとNVS preferences
 
 USB SerialとNT-Shellは115200bpsで動作する。
+通常の`m5stack-sticks3`はコード既定値`NT_SHELL_ENABLED=1`でNT-Shellを開始し、ステータスバーへ`SH`を表示する。
+`m5stack-sticks3-diagnostic`は`NT_SHELL_ENABLED=0`かつ`RANGING_DIAGNOSTICS_ENABLED=1`で、NT-Shellを開始しない。
+診断版はANCHORの各測距完了を`RANGE A=... T=... RESULT=OK|ERR|PARSE|START|TIMEOUT DIST=... DUR=... CODE=...`の1行へ整形する。高優先度タスクは固定長event queueへ追加するだけとし、Serial出力は低優先度画面タスクだけが行う。
 `pref status`、`list`、`exists`、`get`、`set`、`remove`、`clear YES`でNVSを操作できる。
 詳細な構文と型は[Preferencesコマンド仕様](preferences-commands.md)を参照する。
 
@@ -123,6 +127,7 @@ modeを変更する場合はNVSの`run_mode`を設定して再起動し、RYUW12
 | `NtpTimeProtocolCodec`、`NtpTimeSynchronizer` | `include/NtpTimeProtocolCodec.h`、`include/NtpTimeSynchronizer.h` | NTP packet、同期、時刻変換、現在master時刻取得 |
 | `Ryuw122Initializer` | `include/Ryuw122Initializer.h` | UART開始、GPIO8 NRST復旧、AT疎通と設定 |
 | `Ryuw122Controller` | `include/Ryuw122Controller.h` | 初期化後の非同期測距 |
+| `Ryuw122ResponseParser` | `include/Ryuw122ResponseParser.h` | RYUW122測距応答とerror応答の厳密解析 |
 | `SequentialRangingProtocolCodec` | `include/SequentialRangingProtocolCodec.h` | 測距packetの固定wire codec |
 | `SequentialRangingController` | `include/SequentialRangingController.h` | 二重loop、逐次event、round summary |
 | `SequentialRangingDisplay` | `include/SequentialRangingDisplay.h` | M5画面表示 |
@@ -139,12 +144,11 @@ modeを変更する場合はNVSの`run_mode`を設定して再起動し、RYUW12
 ## テスト、build、保留事項
 
 PlatformIO native環境はT-003からT-009を分離しており、T-009はproductionの選出、NTP、protocol codec、逐次測距controllerを1つのtest binaryへ直接結合する。
-`native_t008`は表示回帰に加えて、取得済みsnapshotが後続の測距状態変更から独立し、ANCHORの`RANGE`から`IDLE`への遷移を別snapshotで描画できることを検証する。
-`native_t015`はproductionの`RangingDisplayTaskController.cpp`をFreeRTOS・M5・依存stubと直接結合し、task設定、更新順、snapshot上書き、画面転送、作成失敗rollback、永続診断、停止順を検証する。
+`native_t005`はproductionの`Ryuw122ResponseParser`を直接通し、公式4 field、RSSI付き5 field、`cm`、厳密なrangeと`+ERR`を検証する。
+`native_t008`は成功履歴、現在失敗、成功時解除、5件ずつの配置、135 pixel幅、固定長snapshotを検証する。
+`native_t015`はproductionの`RangingDisplayTaskController.cpp`をFreeRTOS・M5・依存stubと直接結合し、task設定、更新順、snapshot上書き、診断queue、Serial境界、作成失敗rollback、停止順を検証する。
 3 ANCHOR×2 TAGの順序、逐次公開、時刻変換、round完了、基本timeout、master変更reset、再同期をhost上で検証する。
-M5StickS3は`m5stack-sticks3`環境でclean/full buildする。
-T-015通常レビュー修正時点でnative testは96件すべて成功し、M5StickS3 clean/full buildも成功している。
-full buildの使用量はRAM 68,808 / 327,680バイト、Flash 1,236,167 / 3,342,336バイトである。
+M5StickS3は通常版`m5stack-sticks3`と診断版`m5stack-sticks3-diagnostic`をそれぞれclean/full buildする。
 
 EKFと座標計算は未実装であり、逐次結果を将来の非同期観測入力として利用する前提である。
 アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧は未実装である。

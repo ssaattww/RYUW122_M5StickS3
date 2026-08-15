@@ -14,8 +14,10 @@
 struct FakeQueue
 {
     size_t m_itemSize = 0;
-    std::vector<uint8_t> m_item;
-    bool m_hasItem = false;
+    size_t m_length = 0;
+    size_t m_head = 0;
+    size_t m_count = 0;
+    std::vector<uint8_t> m_items;
 };
 
 using QueueHandle_t = FakeQueue*;
@@ -33,13 +35,14 @@ inline QueueHandle_t xQueueCreate(UBaseType_t length, UBaseType_t itemSize)
     g_taskTestRuntime.m_events.emplace_back("create_queue");
     if (g_taskTestRuntime.m_failQueueCreateCall ==
             g_taskTestRuntime.m_queueCreateCallCount ||
-        length != 1U)
+        length == 0U)
     {
         return nullptr;
     }
     auto* queue = new FakeQueue{};
     queue->m_itemSize = itemSize;
-    queue->m_item.resize(itemSize);
+    queue->m_length = length;
+    queue->m_items.resize(static_cast<size_t>(length) * itemSize);
     return queue;
 }
 
@@ -56,10 +59,44 @@ inline BaseType_t xQueueOverwrite(QueueHandle_t queue, const void* item)
     {
         return pdFALSE;
     }
-    memcpy(queue->m_item.data(), item, queue->m_itemSize);
-    queue->m_hasItem = true;
+    if (queue->m_length != 1U)
+    {
+        return pdFALSE;
+    }
+    memcpy(queue->m_items.data(), item, queue->m_itemSize);
+    queue->m_head = 0U;
+    queue->m_count = 1U;
     ++g_taskTestRuntime.m_queueOverwriteCount;
     g_taskTestRuntime.m_events.emplace_back("overwrite_queue");
+    return pdTRUE;
+}
+
+/**
+ * @brief test用FIFOへ要素を追加します。
+ *
+ * @param queue 対象queue
+ * @param item 保存する要素
+ * @param waitTicks 未使用の待機tick
+ * @return 保存できた場合はpdTRUE
+ */
+inline BaseType_t xQueueSend(
+    QueueHandle_t queue,
+    const void* item,
+    TickType_t waitTicks)
+{
+    static_cast<void>(waitTicks);
+    if (queue == nullptr || item == nullptr || queue->m_count >= queue->m_length)
+    {
+        return pdFALSE;
+    }
+    const size_t tail = (queue->m_head + queue->m_count) % queue->m_length;
+    memcpy(
+        queue->m_items.data() + tail * queue->m_itemSize,
+        item,
+        queue->m_itemSize);
+    ++queue->m_count;
+    ++g_taskTestRuntime.m_queueSendCount;
+    g_taskTestRuntime.m_events.emplace_back("send_queue");
     return pdTRUE;
 }
 
@@ -77,12 +114,16 @@ inline BaseType_t xQueueReceive(
     TickType_t waitTicks)
 {
     static_cast<void>(waitTicks);
-    if (queue == nullptr || item == nullptr || !queue->m_hasItem)
+    if (queue == nullptr || item == nullptr || queue->m_count == 0U)
     {
         return pdFALSE;
     }
-    memcpy(item, queue->m_item.data(), queue->m_itemSize);
-    queue->m_hasItem = false;
+    memcpy(
+        item,
+        queue->m_items.data() + queue->m_head * queue->m_itemSize,
+        queue->m_itemSize);
+    queue->m_head = (queue->m_head + 1U) % queue->m_length;
+    --queue->m_count;
     ++g_taskTestRuntime.m_queueReceiveCount;
     g_taskTestRuntime.m_events.emplace_back("receive_queue");
     return pdTRUE;

@@ -230,6 +230,7 @@ ANCHORは測距時刻を、フォロワーTAGは自ノードのセンサー時�
 - TAGまたはANCHORモードの設定
 - モードを書き換えた場合だけ、次のATコマンドまで2秒待機
 - UWBネットワークIDと8文字アドレスの設定
+- TAG動作時に1 byteの`T`を測距応答payloadとして登録
 - ANCHORから指定TAGへの非同期測距開始
 - RYUW122受信処理の更新
 - 測距完了、RSSI、距離の通知
@@ -238,7 +239,7 @@ ANCHORは測距時刻を、フォロワーTAGは自ノードのセンサー時�
 
 正常系の測距開始前後に固定`delay()`を追加しない。
 GPIO8の固定待機は起動時のRYUW122復旧だけで使用し、測距中には実行しない。
-UART開始、NRST復旧、AT疎通確認、モード、network ID、address設定の順序は`Ryuw122Initializer`へ集約する。
+UART開始、NRST復旧、AT疎通確認、モード、network ID、address設定、TAG応答payload登録の順序は`Ryuw122Initializer`へ集約する。
 GPIO8の物理操作は実機portへ委譲するが、復旧の実行判断とAT設定を別クラスへ分散させない。
 RYUW122ライブラリ内蔵のLOW 5ms、HIGH駆動によるリセット機能は使用しない。
 
@@ -845,6 +846,7 @@ RYUW122の非同期応答を待つ。
 
 同じANCHORに次のTAGがある場合、結果送信完了を待たず、RYUW122が受け付け可能になり次第そのTAGの測距を開始する。
 UWB失敗でも次の組み合わせへ進む。
+前回timeout後の遅延応答排出中は次の制御を保持し、RYUW122が`Idle`へ戻るまで開始を保留する。`Busy`はUART投入失敗ではないため`START`診断を生成せず、同じANCHOR・TAG組み合わせのUART commandは1回だけ送る。
 
 ### 13.3 Forwarding
 
@@ -862,6 +864,7 @@ UWBタイムアウト後に到着した古い応答を次ラウンドへ誤帰�
 
 遅延応答を破棄するか、規定の排出期限が経過した後に`Idle`へ戻る。
 失敗時専用の待機は正常系の最短周期へ影響させない。
+排出中に次roundの`RangeControl`を受信しても、制御状態は保持したまま新しいUART commandを送らない。
 
 ## 14. シーケンス図
 
@@ -1089,7 +1092,7 @@ Wi-Fi省電力が有効な場合、NTP計算自体が成功しても`PowerSaveEn
 - 依存クラスの生成
 - M5、Canvas、Serial、NVS、`ConfigRuntime`の起動時初期化
 - ESP-NOW、NodeStatus broadcast、RYUW122、逐次測距の開始
-- NT-Shellと`RangingDisplayTaskController`の開始
+- 通常版でのNT-Shellと`RangingDisplayTaskController`の開始
 - task開始失敗時の永続画面診断
 - Arduino loop taskから定期的に実行権を譲る処理
 
@@ -1097,15 +1100,15 @@ NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーン、�
 
 `RangingDisplayTaskController`の高優先度タスクはcore 1、優先度4で通信、同期、UWB、逐次測距、表示model更新を順番に実行する。
 低優先度画面タスクはcore 0、優先度1でM5入力、Canvas描画、sprite転送を実行する。
-NT-Shellは既存の独立threadとし、測距タスクより低い優先度で動作する。
+通常版のNT-Shellは既存の独立threadとし、測距タスクより低い優先度で動作する。診断版はNT-Shellを開始しない。
 画面描画やNT-Shell処理により、次測距または次ラウンド開始が遅延してはならない。
 
-高優先度タスクから低優先度タスクへは容量1の固定長`SequentialRangingDisplaySnapshot` queueだけを渡す。
+高優先度タスクから低優先度タスクへは容量1の固定長`SequentialRangingDisplaySnapshot` queueと、診断版でだけ有効な固定長測距診断event queueを渡す。
 新しいsnapshotは古い未描画snapshotを上書きし、画面遅延を測距側へ返さない。
 低優先度タスクはcontroller、broadcast、NTP、RYUW122、`ConfigRuntime`を直接参照しない。
 本体ボタンによるruntime mode変更は行わない。
 modeはNVSの`run_mode`を設定して再起動したときだけRYUW122のrole・UWB addressと全protocol状態へ反映する。
-停止時は両タスクを停止してからsnapshot queueを解放し、実行中タスクが解放済みqueueへ触れない順序とする。
+停止時は両タスクを停止してから診断queue、snapshot queueの順に解放し、実行中タスクが解放済みqueueへ触れない順序とする。
 queueまたはtask作成に失敗した場合は部分生成したtaskとqueueを同じ順序で破棄し、`main.cpp`が`Begin()`失敗を判定して`TASK START FAILED`を画面へ永続表示する。
 
 ## 19. 実装同期状況
@@ -1124,6 +1127,9 @@ master、session、送信元MAC、宛先MAC、target ID、受信チャンネル�
 最終測距結果を受信すると同じ`Update()`内でround summaryを保存し、次roundの最小ANCHOR向け制御を高優先度FIFOへ追加する。
 round timeoutは`ANCHOR数 * TAG数 * 300ms + ANCHOR数 * 50ms + 50ms`で計算する。
 
+RYUW122のproduction parserは`+ANCHOR_RCV=<addr>,<len>,<data>,<distance>`と任意の末尾RSSIを受理する。距離は純数値または空白に続く小文字`cm`を受理し、address 8文字、payload長とdata長、距離、RSSIの各範囲を検証する。TAG初期化時は応答payload `T`を`TAG_SEND`で登録し、ANCHORはpayload `A`を付けて非同期測距を開始する。
+`+ERR=<n>`、parse失敗、UART投入失敗、timeoutは`Ryuw122RangingResult`の内部診断理由で区別する。既存の`RangeMeasurementPacket`には理由とerror codeを追加せず、TAGへ送るstatusは`FAIL`または`TIMEOUT`のままとする。timeout診断の`CODE=0`はcommand投入後に`+OK`を観測しなかった場合、`CODE=1`は`+OK`を観測したが測距完了応答がなかった場合を表す。
+
 ### 19.2 固定長queue
 
 動的に増える結果queueは使用しない。
@@ -1138,30 +1144,28 @@ round timeoutは`ANCHOR数 * TAG数 * 300ms + ANCHOR数 * 50ms + 50ms`で計算�
 | `SequentialRangingController` | 測距結果などの低優先度送信 | 80件 |
 | `SequentialRangingController` | アプリケーション向け逐次結果 | 64件 |
 | `SequentialRangingController` | round summary | 4件 |
+| `SequentialRangingController` | ANCHORローカル測距診断 | 8件 |
 | `RangingDisplayTaskController` | 最新表示snapshot | 1件、上書き |
+| `RangingDisplayTaskController` | 高優先度から低優先度への測距診断event | 8件 |
 
 容量超過や送信失敗は診断件数へ記録する。
 初期実装の画面はqueue診断件数を表示しない。
 
 ### 19.3 画面とhealth表示
 
-ステータスバーはノードID、動作モード、バッテリー残量を表示する。
-逐次測距領域はrole、状態、時刻品質と、受信ノードの`NodeMap`先頭3件を表示する。
-TAGでは`EspNowBroadcast::GetLocalStatus()`の自ノードIDと一致するmeasurementだけを、ANCHOR ID別の最新結果として最大8件の固定長配列へ保存する。
+ステータスバーはノードID、動作モード、通常版の`SH`、バッテリー残量を表示する。
+逐次測距領域はrole、状態、時刻品質と、受信ノードの`NodeMap`先頭5件を表示する。
+TAGでは`EspNowBroadcast::GetLocalStatus()`の自ノードIDと一致するmeasurementだけを、ANCHOR ID別last-successとcurrent failureとして各最大5件の固定長配列へ保存する。
 マスターTAGが収集した他TAG向け結果は表示一覧へ入れず、フォロワーTAGはマスターから自ノード向けに転送・公開された結果を同じ一覧へ保存する。
-一覧はANCHOR ID昇順とし、成功時はANCHOR ID、距離、`rangingCompletedMasterTimeUs`由来の計測完了秒、失敗時は距離の代わりに`FAIL`、`TIMEOUT`、`MISS`を表示する。
+両一覧はANCHOR ID昇順とする。成功一覧はANCHOR IDと距離を表示し、後続の失敗で上書きしない。失敗一覧はANCHOR ID、`FAIL`または`TIME`、duration msを表示し、同じANCHORの次回成功時に解除する。
 距離は100,000mm未満をmm、100,000,000mm未満を整数m、それ以上を整数kmとする。
-`Synchronized`、`PowerSaveEnabled`、`ReceiveTimestampUnavailable`はマスター時刻への変換自体が成功した品質であるため、有効な計測完了時刻として表示する。
-`SynchronizationExpired`、`Unsynchronized`、未知の品質値は無効とし、時刻値にかかわらず`@UNSYNC`を表示する。
-`rangingCompletedMasterTimeUs=0`は品質が有効ならマスター起動直後の正当な0秒として扱い、品質が無効なら`@UNSYNC`とする。
+時刻品質は`SEQ`行の品質表示へ反映し、成功・失敗各行には計測完了時刻を表示しない。
 
 `NtpTimeSynchronizer::TryGetCurrentMasterTime()`は、自ノードがマスターTAGならtime providerの現在値を返す。
 フォロワーTAGでは同期確定時のローカル・マスター対応点から現在ローカル時刻をマスター時刻へ変換し、マスター未選出または未同期ならfalseを返す。
 本画面で統一時刻とは、このAPIが返す現在のマスターTAG基準時刻を意味する。
-TAG画面はこの現在値をマスター基準秒の下6桁として`NOW`行へ表示し、秒が変化したときに再描画する。
-有効な計測完了時刻も同じ1,000,000秒moduloの6桁秒として表示し、`NOW`と同じ折り返し基準で比較できるようにする。
-ANCHORではTAG専用の現在時刻とANCHOR別結果一覧を表示しない。
-round summaryはcontroller FIFOから取り出すが、8 ANCHOR結果を優先するため画面には表示しない。
+TAG画面はこの現在値をマスター基準秒の下6桁として`NOW`行へ表示し、秒が変化したときに再描画する。ANCHORの固定配置では`NOW UNSYNC`を表示する。
+round summaryはcontroller FIFOから取り出すが、成功・失敗・NodeStatus一覧を優先するため画面には表示しない。
 
 表示判断、固定長一覧保持、単位変換、snapshot生成、snapshot描画は`SequentialRangingDisplay`へ集約する。
 表示eventとNodeStatusの取り込みは高優先度タスク上だけで実行し、低優先度タスクは固定長snapshotだけを描画する。
@@ -1170,10 +1174,14 @@ round summaryはcontroller FIFOから取り出すが、8 ANCHOR結果を優先�
 低優先度画面タスクは描画完了後に最新snapshotを取得して再描画するため、`RANGE`を実際の測距状態より必要以上に保持しない。
 実測距の300ms timeoutは変更しない。
 `main.cpp`は表示クラスとtask controllerのcompositionだけを行い、時刻計算、結果保持、通常運転中の描画を行わない。
-M5StickS3の135×240 pixel画面では、状態をY=23、現在時刻をY=35、最大8 ANCHOR結果をY=47から131、NodeStatus headerをY=143、3件をY=155、167、179へ配置する。
-ANCHOR結果行は通常文字倍率とし、最大ANCHOR ID、`TIMEOUT`、最大距離単位、6桁秒を既存の135 pixel幅へ収める。
+M5StickS3の135×240 pixel画面ではline heightを10 pixelとし、状態をY=23、現在時刻をY=33、成功headerと最大5行をY=43から93、失敗headerと最大5行をY=103から153、NodeStatus headerと最大5行をY=163から213へ配置する。
+各行は通常文字倍率で135 pixel幅へ収める。
 RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗は通常表示より優先して保持表示する。
 master session変更時はANCHOR別measurement一覧と表示品質を破棄する。
+
+コード既定値は`NT_SHELL_ENABLED=1`、`RANGING_DIAGNOSTICS_ENABLED=0`である。通常版はNT-Shellを開始し診断Serial出力を行わない。
+診断版は`NT_SHELL_ENABLED=0`、`RANGING_DIAGNOSTICS_ENABLED=1`とし、ANCHORで完了した各測距を`RANGE A=... T=... RESULT=OK|ERR|PARSE|START|TIMEOUT DIST=... DUR=... CODE=...`相当の1行にする。
+高優先度タスクは固定長eventをqueueへ追加するだけで、文字列整形とSerial出力は低優先度画面タスクだけが行う。
 
 ### 19.4 late node同期
 
