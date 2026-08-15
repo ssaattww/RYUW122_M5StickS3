@@ -95,6 +95,40 @@ bool NtpTimeSynchronizer::IsSynchronizationComplete() const
         m_currentTargetIndex >= m_targetCount;
 }
 
+/**
+ * @brief 現在のローカル単調時刻に対応するマスターTAG基準時刻を取得します。
+ *
+ * @param masterTimeUs 現在のマスターTAG基準時刻格納先
+ * @return 自ノードがマスター、または同期済み非マスターの場合はtrue。それ以外はfalse
+ */
+bool NtpTimeSynchronizer::TryGetCurrentMasterTime(
+    uint64_t& masterTimeUs) const
+{
+    if (!m_master.isValid)
+    {
+        return false;
+    }
+
+    const uint64_t localTimeUs = m_timeProvider();
+    uint64_t currentMasterTimeUs = 0;
+    if (m_master.isSelfMaster)
+    {
+        currentMasterTimeUs = localTimeUs;
+    }
+    else if (!m_localSynchronization.isValid ||
+        !TranslateClockDomain(
+            localTimeUs,
+            m_localSynchronizationAnchorUs,
+            m_localSynchronization.synchronizedAtMasterTimeUs,
+            currentMasterTimeUs))
+    {
+        return false;
+    }
+
+    masterTimeUs = currentMasterTimeUs;
+    return true;
+}
+
 bool NtpTimeSynchronizer::TryGetNodeSynchronization(
     uint8_t nodeId,
     NodeTimeSynchronization& synchronization) const

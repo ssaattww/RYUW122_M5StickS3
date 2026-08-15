@@ -51,6 +51,7 @@ struct TimedRangeMeasurement
     EnRangeResultStatus status = EnRangeResultStatus::Failed;
     uint32_t distanceMm = 0;
     int16_t uwbRssi = 0;
+    uint64_t rangingCompletedMasterTimeUs = 0;
     uint32_t rangingDurationUs = 0;
     EnTimeQuality timeQuality = EnTimeQuality::Unsynchronized;
 };
@@ -184,7 +185,7 @@ public:
     }
 
 private:
-    TimedRangeMeasurement m_measurements[8]{};
+    TimedRangeMeasurement m_measurements[16]{};
     SequentialRangeRoundSummary m_summaries[8]{};
     size_t m_measurementHead = 0;
     size_t m_measurementCount = 0;

@@ -19,10 +19,10 @@
 ## 現在位置
 
 - 現在フェーズ: なし
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013
 - 次タスク: なし
 - 次タスク状態: 全タスク完了
-- ブランチ: `codex/measurement-start-sequence`
+- ブランチ: `codex/display-three-nodes-tag-results`
 
 ## タスク一覧
 
@@ -40,6 +40,7 @@
 | T-010 | P6 | sol high最終レビューと必要修正 | M | T-009 | 完了 | 本タスクのコミット |
 | T-011 | P7 | RYUW122 GPIO8リセット復旧 | M | T-010 | 完了 | 本タスクのコミット |
 | T-012 | P8 | 計測開始シーケンスと実装範囲の明文化 | S | T-011 | 完了 | 本タスクのコミット |
+| T-013 | P9 | 接続先3件とTAG全ANCHOR測距結果・統一時刻の画面表示 | M | T-012 | 完了 | 本タスクのコミット |
 
 ## タスク詳細
 
@@ -499,6 +500,53 @@
 - 距離結果の集約・逐次公開・対象TAG転送までが実装済みで、座標計算、EKF、永続履歴は未実装であることを明記した。
 - 製品コードとテストコードは変更していない。
 - Markdown lintはrepository配線がないためunsupported、構造・code fence・末尾空白・差分検査は成功した。
+
+### T-013 接続先3件とTAG全ANCHOR測距結果・統一時刻の画面表示
+
+変更対象:
+
+- `include/SequentialRangingDisplay.h`
+- `src/SequentialRangingDisplay.cpp`
+- `include/NtpTimeSynchronizer.h`
+- `src/NtpTimeSynchronizer.cpp`
+- `src/main.cpp`のcomposition
+- `test/test_t008/`以下の関連テスト
+- `docs/sequential-ranging-time-sync.md`
+- `docs/feature-list.md`
+
+実施内容:
+
+- 受信済みNodeStatusの画面表示上限を2件から3件へ拡張する。
+- TAGでは、自ノードへ公開された測距結果をANCHOR IDごとに最大8件保持し、全ANCHORの最新距離を画面へ表示する。
+- 各ANCHORの距離とともに、マスターTAG基準の計測完了時刻を表示する。
+- TAG画面にマスターTAG基準の現在時刻を表示する。
+- 表示判断、一覧保持、描画を`SequentialRangingDisplay`へ集約し、`main.cpp`は依存注入と表示クラス呼び出しだけに保つ。
+
+完了条件:
+
+- 接続先3件が同時に画面へ描画されることをホストテストで確認できる。
+- マスターTAGでは他TAG向け結果を除外し、フォロワーTAGでは自TAG向け転送結果を使用して、全ANCHORの最新距離をホストテストで確認できる。
+- 各ANCHOR行のマスター基準計測時刻と、TAG画面のマスター基準現在時刻を確認できる。
+- ANCHOR表示と既存初期化失敗表示に回帰がない。
+- 全追加・変更関数へ日本語Doxygenがある。
+- PlatformIO native testとM5StickS3 clean/full buildが成功する。
+- T-013だけのコミットを作成する。
+
+通常レビューfinding:
+
+- T013-NR-001 Medium: 未同期measurementを有効なマスター時刻のように表示せず、現在時刻と計測時刻を共通の表示基準へそろえる。
+
+結果:
+
+- TAGは自TAG向けmeasurementだけをANCHOR ID別に最大8件保持し、ANCHOR ID昇順で距離または失敗状態とマスター基準計測時刻を表示する。
+- マスターTAGが収集した他TAG向け結果を除外し、フォロワーTAGは自TAG向け転送結果を表示する。
+- 現在のマスター基準時刻を`NOW`行へ表示し、未同期時は`UNSYNC`とする。
+- 受信NodeStatusの先頭3件と最大8 ANCHOR結果が135×240画面内に収まる。
+- `main.cpp`の変更は既存`NtpTimeSynchronizer`を表示クラスへ注入するcomposition 1行だけである。
+- T013-NR-001 Mediumは修正済みで、fix verificationは`pass_with_held`、新規findingとunexploredはない。
+- focused native_t004 16/16、native_t008 12/12、全native 84/84、M5StickS3 clean/full build、`git diff --check`が成功した。
+- M5StickS3 build使用量はRAM 68,624 / 327,680 bytes、Flash 1,234,447 / 3,342,336 bytesである。
+- 実機での最大8 ANCHOR通信、文字視認性、ちらつき、長時間折り返しは保留する。
 
 ## 実機保留項目
 

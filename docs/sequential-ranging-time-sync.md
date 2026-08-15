@@ -270,7 +270,7 @@ TAG側とANCHOR側の順次測距状態機械を担当する。
 | `include/EspNowTransport.h` | `src/EspNowTransport.cpp` | raw ESP-NOW、受信情報コピー、固定長FIFO送信 |
 | `include/EspNowBroadcast.h` | `src/EspNowBroadcast.cpp` | NodeStatusと`m_nodes` |
 | `include/TagMasterCoordinator.h` | `src/TagMasterCoordinator.cpp` | 最小TAG IDによるマスター選出 |
-| `include/NtpTimeSynchronizer.h` | `src/NtpTimeSynchronizer.cpp` | NTP四時刻同期と時刻変換 |
+| `include/NtpTimeSynchronizer.h` | `src/NtpTimeSynchronizer.cpp` | NTP四時刻同期、時刻変換、現在マスター時刻取得 |
 | `include/Ryuw122Initializer.h` | `src/Ryuw122Initializer.cpp` | UART開始、GPIO8 NRST復旧、AT疎通と設定 |
 | `include/Ryuw122Controller.h` | `src/Ryuw122Controller.cpp` | 初期化後の非同期UWB測距 |
 | `include/SequentialRangingController.h` | `src/SequentialRangingController.cpp` | 二重ループ測距と逐次結果公開 |
@@ -1130,9 +1130,29 @@ round timeoutは`ANCHOR数 * TAG数 * 300ms + ANCHOR数 * 50ms + 50ms`で計算�
 ### 19.3 画面とhealth表示
 
 ステータスバーはノードID、動作モード、バッテリー残量を表示する。
-逐次測距領域はrole、状態、時刻品質、最新roundのANCHOR・TAG、結果、距離、UWB RSSI、測距時間、最新summaryの受信件数・期待件数・timeout・欠損数、受信ノード先頭2件を表示する。
+逐次測距領域はrole、状態、時刻品質と、受信ノードの`NodeMap`先頭3件を表示する。
+TAGでは`EspNowBroadcast::GetLocalStatus()`の自ノードIDと一致するmeasurementだけを、ANCHOR ID別の最新結果として最大8件の固定長配列へ保存する。
+マスターTAGが収集した他TAG向け結果は表示一覧へ入れず、フォロワーTAGはマスターから自ノード向けに転送・公開された結果を同じ一覧へ保存する。
+一覧はANCHOR ID昇順とし、成功時はANCHOR ID、距離、`rangingCompletedMasterTimeUs`由来の計測完了秒、失敗時は距離の代わりに`FAIL`、`TIMEOUT`、`MISS`を表示する。
+距離は100,000mm未満をmm、100,000,000mm未満を整数m、それ以上を整数kmとする。
+`Synchronized`、`PowerSaveEnabled`、`ReceiveTimestampUnavailable`はマスター時刻への変換自体が成功した品質であるため、有効な計測完了時刻として表示する。
+`SynchronizationExpired`、`Unsynchronized`、未知の品質値は無効とし、時刻値にかかわらず`@UNSYNC`を表示する。
+`rangingCompletedMasterTimeUs=0`は品質が有効ならマスター起動直後の正当な0秒として扱い、品質が無効なら`@UNSYNC`とする。
+
+`NtpTimeSynchronizer::TryGetCurrentMasterTime()`は、自ノードがマスターTAGならtime providerの現在値を返す。
+フォロワーTAGでは同期確定時のローカル・マスター対応点から現在ローカル時刻をマスター時刻へ変換し、マスター未選出または未同期ならfalseを返す。
+本画面で統一時刻とは、このAPIが返す現在のマスターTAG基準時刻を意味する。
+TAG画面はこの現在値をマスター基準秒の下10桁として`NOW`行へ表示し、秒が変化したときに再描画する。
+有効な計測完了時刻も同じ10,000,000,000秒moduloの10桁秒として表示し、`NOW`と同じ折り返し基準で比較できるようにする。
+ANCHORではTAG専用の現在時刻とANCHOR別結果一覧を表示しない。
+round summaryはcontroller FIFOから取り出すが、8 ANCHOR結果を優先するため画面には表示しない。
+
+表示判断、固定長一覧保持、単位変換、描画は`SequentialRangingDisplay`へ集約する。
+`main.cpp`は既存`NtpTimeSynchronizer`を表示クラスのconstructorへ渡すcompositionだけを追加し、時刻計算、結果保持、描画を行わない。
+M5StickS3の135×240 pixel画面では、状態をY=23、現在時刻をY=35、最大8 ANCHOR結果をY=47から131、NodeStatus headerをY=143、3件をY=155、167、179へ配置する。
+ANCHOR結果行だけ横方向文字倍率を0.9とし、最大ANCHOR ID、`TIMEOUT`、最大距離単位、10桁秒を既存の135 pixel幅へ収める。
 RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗は通常表示より優先して保持表示する。
-master session変更時は旧measurementと旧summaryの表示保持を破棄する。
+master session変更時はANCHOR別measurement一覧と表示品質を破棄する。
 
 ### 19.4 late node同期
 

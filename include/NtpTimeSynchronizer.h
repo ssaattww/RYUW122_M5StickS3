@@ -86,6 +86,14 @@ public:
     bool IsSynchronizationComplete() const;
 
     /**
+     * @brief 現在のローカル単調時刻に対応するマスターTAG基準時刻を取得します。
+     *
+     * @param masterTimeUs 現在のマスターTAG基準時刻格納先
+     * @return 自ノードがマスター、または同期済み非マスターの場合はtrue。それ以外はfalse
+     */
+    bool TryGetCurrentMasterTime(uint64_t& masterTimeUs) const;
+
+    /**
      * @brief 指定ノードの採用済み同期情報を取得します。
      *
      * @param nodeId 対象ノードID

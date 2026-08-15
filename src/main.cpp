@@ -46,6 +46,7 @@ namespace
     SequentialRangingDisplay sequentialRangingDisplay(
         sequentialRangingController,
         espNowBroadcast,
+        ntpTimeSynchronizer,
         canvas);
 
     constexpr int StatusBarHeight = 20;

@@ -418,6 +418,104 @@ namespace
     }
 
     /**
+     * @brief self masterがprovider現在値をマスター基準現在時刻として返すことを検証します。
+     */
+    void TestCurrentMasterTimeForSelfMaster()
+    {
+        const NodeStatus masterStatus = MakeStatus(1, EnRunMode::Tag, 1);
+        EspNowTransport transport;
+        EspNowBroadcast broadcast;
+        broadcast.SetLocalStatus(masterStatus);
+        TagMasterCoordinator coordinator;
+        coordinator.SetMaster(
+            MakeMasterIdentity(masterStatus, 77),
+            true);
+        ConfigRuntime config;
+        fakeTimeUs = 1234567;
+        NtpTimeSynchronizer synchronizer(
+            transport,
+            broadcast,
+            coordinator,
+            config,
+            GetFakeTimeUs);
+
+        uint64_t currentMasterTimeUs = 999;
+        TEST_ASSERT_FALSE(synchronizer.TryGetCurrentMasterTime(
+            currentMasterTimeUs));
+        TEST_ASSERT_EQUAL_UINT64(999, currentMasterTimeUs);
+        synchronizer.Update();
+        TEST_ASSERT_TRUE(synchronizer.TryGetCurrentMasterTime(
+            currentMasterTimeUs));
+        TEST_ASSERT_EQUAL_UINT64(1234567, currentMasterTimeUs);
+
+        fakeTimeUs = 2234567;
+        TEST_ASSERT_TRUE(synchronizer.TryGetCurrentMasterTime(
+            currentMasterTimeUs));
+        TEST_ASSERT_EQUAL_UINT64(2234567, currentMasterTimeUs);
+
+        coordinator.SetMaster(TagMasterIdentity{}, false);
+        synchronizer.Update();
+        currentMasterTimeUs = 888;
+        TEST_ASSERT_FALSE(synchronizer.TryGetCurrentMasterTime(
+            currentMasterTimeUs));
+        TEST_ASSERT_EQUAL_UINT64(888, currentMasterTimeUs);
+    }
+
+    /**
+     * @brief followerが同期済みローカル現在値をマスター基準現在時刻へ変換することを検証します。
+     */
+    void TestCurrentMasterTimeForFollower()
+    {
+        const NodeStatus masterStatus = MakeStatus(1, EnRunMode::Tag, 1);
+        const NodeStatus followerStatus = MakeStatus(4, EnRunMode::Tag, 4);
+        EspNowTransport transport;
+        EspNowBroadcast broadcast;
+        broadcast.SetLocalStatus(followerStatus);
+        TagMasterCoordinator coordinator;
+        coordinator.SetMaster(
+            MakeMasterIdentity(masterStatus, 77),
+            false);
+        ConfigRuntime config;
+        fakeTimeUs = 5201;
+        NtpTimeSynchronizer synchronizer(
+            transport,
+            broadcast,
+            coordinator,
+            config,
+            GetFakeTimeUs);
+
+        uint64_t currentMasterTimeUs = 999;
+        TEST_ASSERT_FALSE(synchronizer.TryGetCurrentMasterTime(
+            currentMasterTimeUs));
+        TEST_ASSERT_EQUAL_UINT64(999, currentMasterTimeUs);
+        ApplyNodeCommit(
+            synchronizer,
+            transport,
+            masterStatus,
+            followerStatus,
+            77,
+            200,
+            5000);
+        TEST_ASSERT_TRUE(synchronizer.TryGetCurrentMasterTime(
+            currentMasterTimeUs));
+        TEST_ASSERT_EQUAL_UINT64(5001, currentMasterTimeUs);
+
+        fakeTimeUs = 6201;
+        TEST_ASSERT_TRUE(synchronizer.TryGetCurrentMasterTime(
+            currentMasterTimeUs));
+        TEST_ASSERT_EQUAL_UINT64(6001, currentMasterTimeUs);
+
+        coordinator.SetMaster(
+            MakeMasterIdentity(masterStatus, 88),
+            false);
+        synchronizer.Update();
+        currentMasterTimeUs = 777;
+        TEST_ASSERT_FALSE(synchronizer.TryGetCurrentMasterTime(
+            currentMasterTimeUs));
+        TEST_ASSERT_EQUAL_UINT64(777, currentMasterTimeUs);
+    }
+
+    /**
      * @brief 1ノード3サンプル同期、最小RTT、変換、マスター変更resetを検証します。
      */
     void TestOneNodeSynchronizationFlowAndMasterReset()
@@ -966,6 +1064,8 @@ int main()
     RUN_TEST(TestTimestampWrapAndExtension);
     RUN_TEST(TestBestSampleSelection);
     RUN_TEST(TestTimeQuality);
+    RUN_TEST(TestCurrentMasterTimeForSelfMaster);
+    RUN_TEST(TestCurrentMasterTimeForFollower);
     RUN_TEST(TestOneNodeSynchronizationFlowAndMasterReset);
     RUN_TEST(TestFollowerCommitOffsetAndAge);
     RUN_TEST(TestFollowerCommitWrapConversion);

@@ -55,6 +55,26 @@ public:
     }
 
     /**
+     * @brief test用自ノード状態を取得します。
+     *
+     * @return 自ノード状態
+     */
+    const NodeStatus& GetLocalStatus() const
+    {
+        return m_localStatus;
+    }
+
+    /**
+     * @brief test用自ノード状態を設定します。
+     *
+     * @param status 設定する自ノード状態
+     */
+    void SetLocalStatus(const NodeStatus& status)
+    {
+        m_localStatus = status;
+    }
+
+    /**
      * @brief NodeStatus通知をtest用queueへ追加します。
      *
      * @param status 追加するNodeStatus
@@ -69,6 +89,7 @@ public:
     }
 
 private:
+    NodeStatus m_localStatus{};
     NodeMap m_nodes;
     NodeStatus m_lastStatus{};
     size_t m_pendingCount = 0;

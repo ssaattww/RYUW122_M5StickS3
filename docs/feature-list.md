@@ -11,7 +11,7 @@ M5Stack系へ移植する場合はM5Unifiedの共通APIを維持しつつ、boar
 1. `NvsPreferenceStore`、`ConfigPreference`、`ConfigRuntime`が永続設定と実行時設定を管理する。
 2. `EspNowTransport`と`EspNowBroadcast`がraw ESP-NOWとNodeStatusを管理する。
 3. `TagMasterCoordinator`が最小TAG IDのmasterを選出する。
-4. `NtpTimeSynchronizer`がmaster基準時刻へ同期する。
+4. `NtpTimeSynchronizer`がmaster基準時刻へ同期し、現在のmaster基準時刻を提供する。
 5. `Ryuw122Controller`がUART経由の非同期UWB測距を管理する。
 6. `SequentialRangingProtocolCodec`と`SequentialRangingController`が順序、wire形式、逐次公開を管理する。
 7. `SequentialRangingDisplay`が最新結果とhealthをM5画面へ表示する。
@@ -64,10 +64,20 @@ network IDは`UWB00001`、UWBアドレスはroleとnode IDから`T0000001`また
 
 - ステータスバー: node ID、mode、バッテリー残量
 - 逐次状態: master・follower・ANCHOR、待機・同期・測距状態、時刻品質
-- 最新測距: round、ANCHOR ID、TAG ID、成功・失敗・timeout、距離、UWB RSSI、所要時間
-- 最新summary: 受信数、期待数、完了・timeout、欠損数、round所要時間
-- 受信ノード: 先頭2件のID、role、座標
+- TAGの現在時刻: master基準現在秒。masterは単調時刻provider、followerは同期済みローカル現在時刻から取得し、未同期時は`NOW UNSYNC`とする
+- TAGのANCHOR別最新測距: 自TAG向け結果だけを最大8件、ANCHOR ID昇順で表示する。各行は距離または失敗statusと、master基準の計測完了秒を含む
+- 受信ノード: `NodeMap`の先頭3件のID、role、座標
 - 起動health: RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗
+
+master TAGが収集した他TAG向け結果は一覧へ入れず、follower TAGでは自TAG向け転送結果を表示する。
+画面上の統一時刻は、現在のmaster基準時刻を意味する。
+成功距離は値に応じてmm、m、kmへ短縮し、失敗は`FAIL`、`TIMEOUT`、`MISS`で区別する。
+計測時刻は現在時刻と共通の10桁master秒moduloで表示する。
+時刻品質が`Synchronized`、`PowerSaveEnabled`、`ReceiveTimestampUnavailable`なら0秒を含め有効とし、`SynchronizationExpired`、`Unsynchronized`、未知値では`@UNSYNC`を表示する。
+ANCHORではTAG専用の現在時刻と距離一覧を表示しない。
+表示eventの取り込み、固定長一覧保持、TAGとANCHORの表示判断、描画は`SequentialRangingDisplay`へ集約する。
+M5StickS3の135×240 pixel画面では、現在時刻をY座標35、最大8 ANCHOR結果をY座標47から131、受信ノード3件をY座標155、167、179へ描画する。
+ANCHOR結果行は横方向文字倍率0.9で、最大ID・距離・status・10桁秒を135 pixel幅内へ収める。
 
 ## NT-ShellとNVS preferences
 
@@ -100,7 +110,7 @@ NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映�
 | `EspNowTransport` | `include/EspNowTransport.h` | raw ESP-NOW、peer、固定長queue |
 | `EspNowBroadcast`、`NodeStatusCodec` | `include/EspNowBroadcast.h`、`include/NodeStatus.h` | ノード検出と状態wire形式 |
 | `TagMasterCoordinator` | `include/TagMasterCoordinator.h` | master選出とsession変更 |
-| `NtpTimeProtocolCodec`、`NtpTimeSynchronizer` | `include/NtpTimeProtocolCodec.h`、`include/NtpTimeSynchronizer.h` | NTP packet、同期、時刻変換 |
+| `NtpTimeProtocolCodec`、`NtpTimeSynchronizer` | `include/NtpTimeProtocolCodec.h`、`include/NtpTimeSynchronizer.h` | NTP packet、同期、時刻変換、現在master時刻取得 |
 | `Ryuw122Initializer` | `include/Ryuw122Initializer.h` | UART開始、GPIO8 NRST復旧、AT疎通と設定 |
 | `Ryuw122Controller` | `include/Ryuw122Controller.h` | 初期化後の非同期測距 |
 | `SequentialRangingProtocolCodec` | `include/SequentialRangingProtocolCodec.h` | 測距packetの固定wire codec |
@@ -113,15 +123,15 @@ NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映�
 2. ANCHORでは必要に応じて`anchor_pos_x`と`anchor_pos_y`を設定する。
 3. 通常は`wifi_power_save=false`のまま再起動する。
 4. TAG 2台以上とANCHOR 1台以上を起動し、最小TAG IDがmasterになることを画面で確認する。
-5. 同期完了後、最新の逐次測距とround summaryを画面で確認する。
+5. 同期完了後、TAG画面の現在master時刻と自TAG向けANCHOR別最新測距を確認する。
 
 ## テスト、build、保留事項
 
 PlatformIO native環境はT-003からT-009を分離しており、T-009はproductionの選出、NTP、protocol codec、逐次測距controllerを1つのtest binaryへ直接結合する。
 3 ANCHOR×2 TAGの順序、逐次公開、時刻変換、round完了、基本timeout、master変更reset、再同期をhost上で検証する。
 M5StickS3は`m5stack-sticks3`環境でclean/full buildする。
-T-011実装時点でnative testは76件すべて成功し、M5StickS3 clean/full buildも成功している。
-full buildの使用量はRAM 68,144 / 327,680バイト、Flash 1,233,591 / 3,342,336バイトである。
+T-013通常レビュー修正時点でnative testは84件すべて成功し、M5StickS3 clean/full buildも成功している。
+full buildの使用量はRAM 68,624 / 327,680バイト、Flash 1,234,447 / 3,342,336バイトである。
 
 EKFと座標計算は未実装であり、逐次結果を将来の非同期観測入力として利用する前提である。
 アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧、周期的再同期も未実装である。
