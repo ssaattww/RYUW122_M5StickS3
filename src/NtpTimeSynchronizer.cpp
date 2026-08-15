@@ -14,6 +14,8 @@
 namespace
 {
     constexpr uint64_t TimestampEpochUs = uint64_t{1} << 32;
+    constexpr uint64_t FailedTargetRetryDelayUs = 1000000;
+    constexpr uint64_t PeriodicResynchronizationIntervalUs = 30000000;
 
     /**
      * @brief 2つのMACアドレスが一致するか確認します。
@@ -91,8 +93,7 @@ bool NtpTimeSynchronizer::IsSynchronizationComplete() const
     {
         return m_localSynchronization.isValid;
     }
-    return !m_requestPending &&
-        m_currentTargetIndex >= m_targetCount;
+    return m_synchronizationComplete;
 }
 
 /**
@@ -366,6 +367,8 @@ void NtpTimeSynchronizer::DetectMasterChange()
     if (m_master.isValid && m_master.isSelfMaster)
     {
         DiscoverNewTargets();
+        m_periodicResynchronizationBaseUs = m_timeProvider();
+        m_periodicResynchronizationScheduled = true;
     }
 }
 
@@ -384,18 +387,22 @@ void NtpTimeSynchronizer::ResetSynchronizationState()
     m_pendingRequestSequence = 0;
     m_pendingRequestT1 = 0;
     m_requestStartedUs = 0;
+    m_periodicResynchronizationBaseUs = 0;
     m_requestPending = false;
+    m_periodicResynchronizationScheduled = false;
+    m_synchronizationComplete = false;
 }
 
-void NtpTimeSynchronizer::DiscoverNewTargets()
+bool NtpTimeSynchronizer::DiscoverNewTargets()
 {
     if (!m_master.isValid ||
         !m_master.isSelfMaster ||
         m_targetCount >= m_maxTargetCount)
     {
-        return;
+        return false;
     }
 
+    const size_t previousTargetCount = m_targetCount;
     const NodeStatus& localStatus = m_broadcast.GetLocalStatus();
     const uint32_t nowMs = static_cast<uint32_t>(m_timeProvider() / 1000U);
     uint8_t nodeIdCounts[256]{};
@@ -459,6 +466,50 @@ void NtpTimeSynchronizer::DiscoverNewTargets()
             break;
         }
     }
+
+    if (m_targetCount == previousTargetCount)
+    {
+        return false;
+    }
+    m_synchronizationComplete = false;
+    return true;
+}
+
+void NtpTimeSynchronizer::RebuildTargets()
+{
+    TargetState previousTargets[m_maxTargetCount]{};
+    const size_t previousTargetCount = m_targetCount;
+    for (size_t index = 0; index < previousTargetCount; ++index)
+    {
+        previousTargets[index] = m_targets[index];
+    }
+    for (TargetState& target : m_targets)
+    {
+        target = TargetState{};
+    }
+    m_targetCount = 0;
+    m_currentTargetIndex = 0;
+    m_synchronizationComplete = false;
+    DiscoverNewTargets();
+
+    for (size_t index = 0; index < m_targetCount; ++index)
+    {
+        for (size_t previousIndex = 0;
+             previousIndex < previousTargetCount;
+             ++previousIndex)
+        {
+            if (m_targets[index].nodeId ==
+                    previousTargets[previousIndex].nodeId &&
+                IsSameMac(
+                    m_targets[index].macAddress,
+                    previousTargets[previousIndex].macAddress))
+            {
+                m_targets[index].synchronization =
+                    previousTargets[previousIndex].synchronization;
+                break;
+            }
+        }
+    }
 }
 
 bool NtpTimeSynchronizer::IsTargetTracked(
@@ -474,6 +525,44 @@ bool NtpTimeSynchronizer::IsTargetTracked(
         }
     }
     return false;
+}
+
+bool NtpTimeSynchronizer::TrySelectTarget(uint64_t nowUs)
+{
+    bool hasIncompleteTarget = false;
+    for (size_t index = 0; index < m_targetCount; ++index)
+    {
+        TargetState& target = m_targets[index];
+        if (target.completed)
+        {
+            continue;
+        }
+        hasIncompleteTarget = true;
+        if (nowUs < target.m_retryNotBeforeUs)
+        {
+            continue;
+        }
+        m_currentTargetIndex = index;
+        return true;
+    }
+
+    m_currentTargetIndex = m_targetCount;
+    if (!hasIncompleteTarget)
+    {
+        CompleteSynchronization(nowUs);
+    }
+    return false;
+}
+
+void NtpTimeSynchronizer::CompleteSynchronization(uint64_t nowUs)
+{
+    if (m_synchronizationComplete)
+    {
+        return;
+    }
+    m_synchronizationComplete = true;
+    m_periodicResynchronizationBaseUs = nowUs;
+    m_periodicResynchronizationScheduled = true;
 }
 
 bool NtpTimeSynchronizer::TranslateClockDomain(
@@ -710,21 +799,29 @@ void NtpTimeSynchronizer::UpdateMaster()
     {
         return;
     }
+    const uint64_t nowUs = m_timeProvider();
     if (m_requestPending &&
-        m_timeProvider() - m_requestStartedUs >= m_responseTimeoutUs)
+        nowUs - m_requestStartedUs >= m_responseTimeoutUs)
     {
         m_requestPending = false;
     }
-    if (m_requestPending || m_currentTargetIndex >= m_targetCount)
+    if (m_requestPending)
     {
-        if (!m_requestPending && m_currentTargetIndex >= m_targetCount)
-        {
-            DiscoverNewTargets();
-        }
-        if (m_requestPending || m_currentTargetIndex >= m_targetCount)
-        {
-            return;
-        }
+        return;
+    }
+
+    if (m_periodicResynchronizationScheduled &&
+        nowUs - m_periodicResynchronizationBaseUs >=
+            PeriodicResynchronizationIntervalUs)
+    {
+        RebuildTargets();
+        m_periodicResynchronizationBaseUs = nowUs;
+    }
+    DiscoverNewTargets();
+
+    if (!TrySelectTarget(nowUs))
+    {
+        return;
     }
 
     TargetState& target = m_targets[m_currentTargetIndex];
@@ -735,8 +832,6 @@ void NtpTimeSynchronizer::UpdateMaster()
     }
     if (target.completed)
     {
-        ++m_currentTargetIndex;
-        UpdateMaster();
         return;
     }
     if (target.attemptCount >= m_sampleCountPerNode)
@@ -817,7 +912,14 @@ void NtpTimeSynchronizer::FinalizeCurrentTarget()
     }
     if (!target.commitPending)
     {
-        target.completed = true;
+        target.attemptCount = 0;
+        target.validSampleCount = 0;
+        for (NtpTimeSample& sample : target.samples)
+        {
+            sample = NtpTimeSample{};
+        }
+        target.m_retryNotBeforeUs =
+            m_timeProvider() + FailedTargetRetryDelayUs;
     }
 }
 
@@ -856,6 +958,7 @@ void NtpTimeSynchronizer::TrySendCommit()
 
     target.commitPending = false;
     target.completed = true;
+    target.m_retryNotBeforeUs = 0;
 }
 
 uint32_t NtpTimeSynchronizer::NextSequence()

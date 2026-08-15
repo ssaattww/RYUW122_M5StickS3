@@ -41,6 +41,19 @@ public:
     }
 
     /**
+     * @brief remoteノード状態と最終受信時刻を削除します。
+     *
+     * @param status 削除する状態
+     */
+    void RemoveNode(const NodeStatus& status)
+    {
+        NodeAddress address{};
+        memcpy(address.data(), status.macAddress, address.size());
+        m_nodes.erase(address);
+        m_lastSeen.erase(address);
+    }
+
+    /**
      * @brief 自ノード状態を取得します。
      *
      * @return 自ノード状態

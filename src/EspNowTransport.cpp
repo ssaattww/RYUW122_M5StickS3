@@ -295,7 +295,6 @@ void EspNowTransport::OnReceive(
     {
         packet.rssi = info->rx_ctrl->rssi;
         packet.channel = info->rx_ctrl->channel;
-        packet.receivedTimestampUs = info->rx_ctrl->timestamp;
         packet.hasRxControl = true;
     }
     packet.payloadLength = static_cast<uint16_t>(dataLength);

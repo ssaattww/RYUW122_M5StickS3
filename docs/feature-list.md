@@ -34,6 +34,8 @@ ESP-NOWはWi-Fi Stationモードで動作し、受信callbackでは固定長情�
 masterは各ANCHORとfollower TAGへNTP四時刻交換を3回行い、往復遅延が最小の有効サンプルを採用する。
 採用結果は`NtpSyncCommit`で全非masterノードへ送り、各ノードがmaster基準時刻へ変換できる状態になってから測距を開始する。
 master変更時は旧同期、旧round、重複判定、送信待ち、表示保持を破棄し、全ANCHORと全follower TAGが新しいmasterともう一度同期してから測距を再開する。
+正常同期完了から30秒ごとに現在有効なNodeStatusから全非master対象を再構築して再同期し、消失ノードを対象から除外する。
+全サンプルが失敗した対象は同期完了扱いにせず1秒後に再試行し、再同期中は現在roundの完了後から次round開始まで同期完了を待つ。
 
 測距順はANCHOR IDを外側、TAG IDを内側とする。
 3 ANCHOR×2 TAGでは次の順で繰り返す。
@@ -44,7 +46,7 @@ A1-T1 -> A1-T2 -> A2-T1 -> A2-T2 -> A3-T1 -> A3-T2
 
 固定50ms slotは使用せず、RYUW122の完了後に次の組み合わせへ進む。
 1件ごとにmasterへ送り、masterは直ちにアプリケーションへ公開し、follower対象の結果はそのTAGへ転送する。
-最終結果の受信直後に次roundを開始する。
+最終結果の受信直後に、同期完了中であれば次roundを開始する。
 UWB待ちは300ms、NTP応答待ちは100msで、round timeoutはノード数から計算する。
 
 現在実装済みなのは、各ANCHORが各TAGを測距し、結果を1件ずつmaster TAGへ集約・公開し、対象がfollower TAGの場合はそのTAGへ転送するところまでである。
@@ -130,9 +132,9 @@ NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映�
 PlatformIO native環境はT-003からT-009を分離しており、T-009はproductionの選出、NTP、protocol codec、逐次測距controllerを1つのtest binaryへ直接結合する。
 3 ANCHOR×2 TAGの順序、逐次公開、時刻変換、round完了、基本timeout、master変更reset、再同期をhost上で検証する。
 M5StickS3は`m5stack-sticks3`環境でclean/full buildする。
-T-013通常レビュー修正時点でnative testは84件すべて成功し、M5StickS3 clean/full buildも成功している。
-full buildの使用量はRAM 68,624 / 327,680バイト、Flash 1,234,447 / 3,342,336バイトである。
+T-014実装時点でnative testは89件すべて成功し、M5StickS3 clean/full buildも成功している。
+full buildの使用量はRAM 68,760 / 327,680バイト、Flash 1,234,979 / 3,342,336バイトである。
 
 EKFと座標計算は未実装であり、逐次結果を将来の非同期観測入力として利用する前提である。
-アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧、周期的再同期も未実装である。
+アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧は未実装である。
 複数実機での無線、packet loss、queue飽和、時計ドリフト、Wi-Fi省電力差、画面視認性、NT-Shell同時操作、M5Stack系への実移植は実機検証へ保留する。

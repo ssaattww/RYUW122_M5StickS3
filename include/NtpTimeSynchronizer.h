@@ -219,6 +219,7 @@ private:
         uint8_t validSampleCount = 0;
         NtpTimeSample samples[m_sampleCountPerNode]{};
         NodeTimeSynchronization synchronization{};
+        uint64_t m_retryNotBeforeUs = 0;
         bool commitPending = false;
         bool completed = false;
     };
@@ -256,8 +257,16 @@ private:
 
     /**
      * @brief 有効NodeStatusから未処理の同期対象をノードID昇順で追加します。
+     *
+     * @return 同期対象を1件以上追加した場合はtrue、それ以外はfalse
      */
-    void DiscoverNewTargets();
+    bool DiscoverNewTargets();
+
+    /**
+     * @brief 現在有効なNodeStatusから周期再同期対象を再構築します。
+     * 同じノードの採用済み同期情報は進行中round向けに保持します。
+     */
+    void RebuildTargets();
 
     /**
      * @brief ノードIDまたはMACアドレスが現在セッションで処理済みか確認します。
@@ -269,6 +278,21 @@ private:
     bool IsTargetTracked(
         uint8_t nodeId,
         const uint8_t macAddress[6]) const;
+
+    /**
+     * @brief 未完了かつ再試行可能時刻へ到達した同期対象を選択します。
+     *
+     * @param nowUs 現在のマスター単調時刻
+     * @return 同期処理を進められる対象が存在する場合はtrue、それ以外はfalse
+     */
+    bool TrySelectTarget(uint64_t nowUs);
+
+    /**
+     * @brief 全同期対象が正常完了した場合に同期完了状態へ移行します。
+     *
+     * @param nowUs 同期完了時のマスター単調時刻
+     */
+    void CompleteSynchronization(uint64_t nowUs);
 
     /**
      * @brief 対応する2つの64bit時刻を基準に別時計domainへ変換します。
@@ -359,7 +383,10 @@ private:
     uint32_t m_pendingRequestSequence = 0;
     uint32_t m_pendingRequestT1 = 0;
     uint64_t m_requestStartedUs = 0;
+    uint64_t m_periodicResynchronizationBaseUs = 0;
     bool m_requestPending = false;
+    bool m_periodicResynchronizationScheduled = false;
+    bool m_synchronizationComplete = false;
 };
 
 static_assert(

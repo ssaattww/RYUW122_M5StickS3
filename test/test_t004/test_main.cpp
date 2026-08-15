@@ -1,3 +1,106 @@
+#ifdef T004_TRANSPORT_TEST
+
+#include <unity.h>
+
+#include "../../include/EspNowTransport.h"
+#include "EspNowTestRuntime.h"
+
+#include <cstdint>
+
+namespace
+{
+    /**
+     * @brief ESP-NOW受信時刻がrx_ctrl時計ではなくESP Timer時計になることを検証します。
+     */
+    void TestReceiveTimestampUsesEspTimerClockDomain()
+    {
+        EspNowTransport transport;
+        TEST_ASSERT_TRUE(transport.Begin(6, false));
+
+        const uint8_t sourceMac[ESP_NOW_ETH_ALEN] = {0x02, 0, 0, 0, 0, 1};
+        const uint8_t destinationMac[ESP_NOW_ETH_ALEN] = {
+            0x02, 0, 0, 0, 0, 2};
+        const uint8_t payload[] = {1, 2, 3};
+        wifi_pkt_rx_ctrl_t rxControl{};
+        rxControl.rssi = -48;
+        rxControl.channel = 6;
+        rxControl.timestamp = 1234;
+        esp_now_recv_info_t info{};
+        info.src_addr = sourceMac;
+        info.des_addr = destinationMac;
+        info.rx_ctrl = &rxControl;
+        SetEspNowTestTimeUs(UINT64_C(0x100001234));
+
+        TEST_ASSERT_TRUE(InvokeEspNowTestReceive(
+            info,
+            payload,
+            sizeof(payload)));
+        EspNowReceivedPacket received{};
+        TEST_ASSERT_TRUE(transport.TryReceive(received));
+        TEST_ASSERT_EQUAL_UINT32(0x1234, received.receivedTimestampUs);
+        TEST_ASSERT_NOT_EQUAL(rxControl.timestamp, received.receivedTimestampUs);
+        TEST_ASSERT_EQUAL_INT8(-48, received.rssi);
+        TEST_ASSERT_EQUAL_UINT8(6, received.channel);
+        TEST_ASSERT_TRUE(received.hasRxControl);
+    }
+
+    /**
+     * @brief rx_ctrl欠落時もESP Timer時計を受信時刻へ保存することを検証します。
+     */
+    void TestReceiveTimestampWithoutRxControlUsesEspTimer()
+    {
+        EspNowTransport transport;
+        TEST_ASSERT_TRUE(transport.Begin(1, false));
+
+        const uint8_t sourceMac[ESP_NOW_ETH_ALEN] = {0x02, 0, 0, 0, 0, 3};
+        const uint8_t destinationMac[ESP_NOW_ETH_ALEN] = {
+            0x02, 0, 0, 0, 0, 4};
+        const uint8_t payload[] = {9};
+        esp_now_recv_info_t info{};
+        info.src_addr = sourceMac;
+        info.des_addr = destinationMac;
+        SetEspNowTestTimeUs(987654);
+
+        TEST_ASSERT_TRUE(InvokeEspNowTestReceive(
+            info,
+            payload,
+            sizeof(payload)));
+        EspNowReceivedPacket received{};
+        TEST_ASSERT_TRUE(transport.TryReceive(received));
+        TEST_ASSERT_EQUAL_UINT32(987654, received.receivedTimestampUs);
+        TEST_ASSERT_FALSE(received.hasRxControl);
+    }
+}
+
+/**
+ * @brief 各transport test前の追加処理はありません。
+ */
+void setUp()
+{
+}
+
+/**
+ * @brief 各transport test後の追加処理はありません。
+ */
+void tearDown()
+{
+}
+
+/**
+ * @brief production EspNowTransportを直接結合したnative testを実行します。
+ *
+ * @return Unity test結果
+ */
+int main()
+{
+    UNITY_BEGIN();
+    RUN_TEST(TestReceiveTimestampUsesEspTimerClockDomain);
+    RUN_TEST(TestReceiveTimestampWithoutRxControlUsesEspTimer);
+    return UNITY_END();
+}
+
+#else
+
 #include <unity.h>
 
 #include "ConfigRuntime.h"
@@ -799,7 +902,7 @@ namespace
     /**
      * @brief 初回0件後と同期完了後のlate nodeをID順で一度だけ同期することを検証します。
      */
-    void TestLateNodeDiscoveryAndNoResynchronization()
+    void TestLateNodeDiscoveryBeforePeriodicResynchronization()
     {
         const NodeStatus masterStatus = MakeStatus(1, EnRunMode::Tag, 1);
         const NodeStatus anchor3 = MakeStatus(3, EnRunMode::Anchor, 3);
@@ -860,6 +963,167 @@ namespace
         TEST_ASSERT_EQUAL_UINT32(3, CountRequestsForTarget(transport, 3));
         TEST_ASSERT_EQUAL_UINT32(3, CountRequestsForTarget(transport, 5));
         TEST_ASSERT_EQUAL_UINT32(3, CountRequestsForTarget(transport, 7));
+    }
+
+    /**
+     * @brief 全サンプル失敗時に未完了を維持し1秒後に再試行することを検証します。
+     */
+    void TestFailedTargetRetriesAfterOneSecond()
+    {
+        const NodeStatus masterStatus = MakeStatus(1, EnRunMode::Tag, 1);
+        const NodeStatus anchorStatus = MakeStatus(3, EnRunMode::Anchor, 3);
+        EspNowTransport transport;
+        EspNowBroadcast broadcast;
+        broadcast.SetLocalStatus(masterStatus);
+        broadcast.PutNode(anchorStatus, 1000);
+        TagMasterCoordinator coordinator;
+        coordinator.SetMaster(
+            MakeMasterIdentity(masterStatus, 77),
+            true);
+        ConfigRuntime config;
+        fakeTimeUs = 1000000;
+        NtpTimeSynchronizer synchronizer(
+            transport,
+            broadcast,
+            coordinator,
+            config,
+            GetFakeTimeUs);
+
+        synchronizer.Update();
+        for (size_t index = 0;
+             index < NtpTimeSynchronizer::m_sampleCountPerNode;
+             ++index)
+        {
+            fakeTimeUs += NtpTimeSynchronizer::m_responseTimeoutUs;
+            synchronizer.Update();
+        }
+        TEST_ASSERT_FALSE(synchronizer.IsSynchronizationComplete());
+        TEST_ASSERT_EQUAL_UINT32(3, CountRequestsForTarget(transport, 3));
+
+        fakeTimeUs += 999999;
+        synchronizer.Update();
+        TEST_ASSERT_EQUAL_UINT32(3, CountRequestsForTarget(transport, 3));
+        fakeTimeUs += 1;
+        synchronizer.Update();
+        TEST_ASSERT_EQUAL_UINT32(4, CountRequestsForTarget(transport, 3));
+        TEST_ASSERT_FALSE(synchronizer.IsSynchronizationComplete());
+    }
+
+    /**
+     * @brief 正常同期完了から30秒後に全有効ノードを再同期することを検証します。
+     */
+    void TestSuccessfulSynchronizationResynchronizesAfterThirtySeconds()
+    {
+        const NodeStatus masterStatus = MakeStatus(1, EnRunMode::Tag, 1);
+        const NodeStatus anchorStatus = MakeStatus(3, EnRunMode::Anchor, 3);
+        EspNowTransport transport;
+        EspNowBroadcast broadcast;
+        broadcast.SetLocalStatus(masterStatus);
+        broadcast.PutNode(anchorStatus, 1000);
+        TagMasterCoordinator coordinator;
+        coordinator.SetMaster(
+            MakeMasterIdentity(masterStatus, 77),
+            true);
+        ConfigRuntime config;
+        fakeTimeUs = 1000000;
+        NtpTimeSynchronizer synchronizer(
+            transport,
+            broadcast,
+            coordinator,
+            config,
+            GetFakeTimeUs);
+
+        synchronizer.Update();
+        CompleteCurrentTarget(
+            synchronizer,
+            transport,
+            masterStatus,
+            anchorStatus,
+            100);
+        TEST_ASSERT_TRUE(synchronizer.IsSynchronizationComplete());
+        const uint64_t completedAtUs = fakeTimeUs;
+
+        fakeTimeUs = completedAtUs + 29999999;
+        synchronizer.Update();
+        TEST_ASSERT_TRUE(synchronizer.IsSynchronizationComplete());
+        TEST_ASSERT_EQUAL_UINT32(3, CountRequestsForTarget(transport, 3));
+        fakeTimeUs += 1;
+        synchronizer.Update();
+        TEST_ASSERT_FALSE(synchronizer.IsSynchronizationComplete());
+        TEST_ASSERT_EQUAL_UINT32(4, CountRequestsForTarget(transport, 3));
+
+        NodeTimeSynchronization previousSynchronization{};
+        TEST_ASSERT_TRUE(synchronizer.TryGetNodeSynchronization(
+            anchorStatus.nodeID,
+            previousSynchronization));
+        TEST_ASSERT_EQUAL_INT64(
+            100,
+            previousSynchronization.nodeMinusMasterUs);
+        CompleteCurrentTarget(
+            synchronizer,
+            transport,
+            masterStatus,
+            anchorStatus,
+            200);
+        TEST_ASSERT_TRUE(synchronizer.IsSynchronizationComplete());
+        TEST_ASSERT_EQUAL_UINT32(6, CountRequestsForTarget(transport, 3));
+        NodeTimeSynchronization updatedSynchronization{};
+        TEST_ASSERT_TRUE(synchronizer.TryGetNodeSynchronization(
+            anchorStatus.nodeID,
+            updatedSynchronization));
+        TEST_ASSERT_EQUAL_INT64(
+            200,
+            updatedSynchronization.nodeMinusMasterUs);
+    }
+
+    /**
+     * @brief 周期再同期時に消失ノードを対象と同期情報から除外することを検証します。
+     */
+    void TestPeriodicResynchronizationExcludesMissingNode()
+    {
+        const NodeStatus masterStatus = MakeStatus(1, EnRunMode::Tag, 1);
+        const NodeStatus anchor3 = MakeStatus(3, EnRunMode::Anchor, 3);
+        const NodeStatus anchor5 = MakeStatus(5, EnRunMode::Anchor, 5);
+        EspNowTransport transport;
+        EspNowBroadcast broadcast;
+        broadcast.SetLocalStatus(masterStatus);
+        broadcast.PutNode(anchor3, 1000);
+        broadcast.PutNode(anchor5, 1000);
+        TagMasterCoordinator coordinator;
+        coordinator.SetMaster(
+            MakeMasterIdentity(masterStatus, 77),
+            true);
+        ConfigRuntime config;
+        fakeTimeUs = 1000000;
+        NtpTimeSynchronizer synchronizer(
+            transport,
+            broadcast,
+            coordinator,
+            config,
+            GetFakeTimeUs);
+
+        synchronizer.Update();
+        CompleteCurrentTarget(
+            synchronizer, transport, masterStatus, anchor3, 0);
+        CompleteCurrentTarget(
+            synchronizer, transport, masterStatus, anchor5, 0);
+        TEST_ASSERT_TRUE(synchronizer.IsSynchronizationComplete());
+        broadcast.RemoveNode(anchor5);
+        fakeTimeUs += 30000000;
+        broadcast.PutNode(anchor3, static_cast<uint32_t>(fakeTimeUs / 1000U));
+        synchronizer.Update();
+        TEST_ASSERT_FALSE(synchronizer.IsSynchronizationComplete());
+        TEST_ASSERT_EQUAL_UINT32(4, CountRequestsForTarget(transport, 3));
+        TEST_ASSERT_EQUAL_UINT32(3, CountRequestsForTarget(transport, 5));
+
+        NodeTimeSynchronization synchronization{};
+        TEST_ASSERT_FALSE(synchronizer.TryGetNodeSynchronization(
+            anchor5.nodeID,
+            synchronization));
+        CompleteCurrentTarget(
+            synchronizer, transport, masterStatus, anchor3, 0);
+        TEST_ASSERT_TRUE(synchronizer.IsSynchronizationComplete());
+        TEST_ASSERT_EQUAL_UINT32(3, CountRequestsForTarget(transport, 5));
     }
 
     /**
@@ -1071,9 +1335,14 @@ int main()
     RUN_TEST(TestFollowerCommitWrapConversion);
     RUN_TEST(TestFollowerMovingEpochReference);
     RUN_TEST(TestAnchorCommitCompletesSynchronizationAndConversion);
-    RUN_TEST(TestLateNodeDiscoveryAndNoResynchronization);
+    RUN_TEST(TestLateNodeDiscoveryBeforePeriodicResynchronization);
+    RUN_TEST(TestFailedTargetRetriesAfterOneSecond);
+    RUN_TEST(TestSuccessfulSynchronizationResynchronizesAfterThirtySeconds);
+    RUN_TEST(TestPeriodicResynchronizationExcludesMissingNode);
     RUN_TEST(TestLateNodeFilteringAndMaximum);
     RUN_TEST(TestForeignPacketsAreNotConsumed);
     RUN_TEST(TestSendIdleAndNodeIdOrder);
     return UNITY_END();
 }
+
+#endif

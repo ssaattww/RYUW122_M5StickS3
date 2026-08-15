@@ -2,11 +2,13 @@
 
 ホストテストはPlatformIO Test Runnerから実行する。
 特定OS専用スクリプトには依存せず、各環境の`build_src_filter`でproduction sourceを選択する。
+native環境は各`test_main.cpp`とtest stubをTest Runnerから結合するテスト専用環境であり、`platformio run -e native_t009`のような通常buildには対応しない。
 
 | 環境 | 対象 |
 | --- | --- |
 | `native` | T-003 NodeStatusとmaster選出 |
 | `native_t004` | T-004 NTP codec、同期、時刻変換 |
+| `native_t004_transport` | T-004 production ESP-NOW受信callbackの時計domain |
 | `native_t005` | T-005 RYUW122非同期測距 |
 | `native_t006` | T-006 逐次測距protocol codec |
 | `native_t007` | T-007 逐次測距controller |
@@ -16,12 +18,15 @@
 全nativeテストは次のコマンドで実行する。
 
 ```text
-platformio test -e native -e native_t004 -e native_t005 -e native_t006 -e native_t007 -e native_t008 -e native_t009
+platformio test -e native -e native_t004 -e native_t004_transport -e native_t005 -e native_t006 -e native_t007 -e native_t008 -e native_t009
 ```
 
 M5StickS3 buildは次の順で確認する。
 
 ```text
 platformio run -e m5stack-sticks3 -t clean
-platformio run -e m5stack-sticks3
+platformio run
 ```
+
+引数なしの`platformio run`は`platformio.ini`の`default_envs`により`m5stack-sticks3`だけをbuildする。
+`platformio run -e native_*`はTest Runner用のmain、ESP Timer、乱数、RYUW122代替実装を結合しないため使用しない。

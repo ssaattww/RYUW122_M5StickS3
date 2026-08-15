@@ -19,7 +19,7 @@
 ## 現在位置
 
 - 現在フェーズ: なし
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013, T-014
 - 次タスク: なし
 - 次タスク状態: 全タスク完了
 - ブランチ: `codex/display-three-nodes-tag-results`
@@ -41,6 +41,7 @@
 | T-011 | P7 | RYUW122 GPIO8リセット復旧 | M | T-010 | 完了 | 本タスクのコミット |
 | T-012 | P8 | 計測開始シーケンスと実装範囲の明文化 | S | T-011 | 完了 | 本タスクのコミット |
 | T-013 | P9 | 接続先3件とTAG全ANCHOR測距結果・統一時刻の画面表示 | M | T-012 | 完了 | 本タスクのコミット |
+| T-014 | P10 | NTP時計基準統一と定期再同期 | M | T-004, T-013 | 完了 | 本タスクのコミット |
 
 ## タスク詳細
 
@@ -547,6 +548,45 @@
 - focused native_t004 16/16、native_t008 12/12、全native 84/84、M5StickS3 clean/full build、`git diff --check`が成功した。
 - M5StickS3 build使用量はRAM 68,624 / 327,680 bytes、Flash 1,234,447 / 3,342,336 bytesである。
 - 実機での最大8 ANCHOR通信、文字視認性、ちらつき、長時間折り返しは保留する。
+
+### T-014 NTP時計基準統一と定期再同期
+
+変更対象:
+
+- `src/EspNowTransport.cpp`
+- `include/NtpTimeSynchronizer.h`
+- `src/NtpTimeSynchronizer.cpp`
+- `test/test_t004/`以下の関連テスト
+- `docs/sequential-ranging-time-sync.md`
+- `docs/feature-list.md`
+
+実施内容:
+
+- NTP四時刻の`t1`から`t4`を同じESP Timer時計基準へ統一する。
+- 後から起動したノードをNodeStatus検出後に同期対象へ追加する。
+- 初回同期失敗時は短い待機後に再試行する。
+- 正常同期後も30秒ごとに現在有効なノード一覧を再構築して再同期する。
+- 再同期開始後は現在の測距ラウンドを完了し、次ラウンド開始前に同期完了を要求する。
+- 通常buildの既定対象をM5StickS3に限定し、テスト専用native環境の誤リンクを防止する。
+
+完了条件:
+
+- MAC受信タイムスタンプとESP TimerをNTP四時刻計算内で混在させない。
+- 遅れて起動したANCHORが再起動なしで同期・測距対象へ追加される。
+- 同期失敗対象が1秒後に再試行され、正常同期対象は30秒後に再同期される。
+- 引数なしの通常buildで`native_t009`をリンクせず、`platformio test -e native_t009`は成功する。
+- 全追加・変更関数へ日本語Doxygenがある。
+- focused native test、全native test、M5StickS3 clean/full buildが成功する。
+
+結果:
+
+- NTP四時刻をESP Timer時計基準へ統一し、`rx_ctrl`はRSSI、チャンネル、受信制御情報の有無だけに使用する。
+- 後参加ノードを即時追加し、同期失敗対象は1秒後、正常同期対象は30秒後に再同期する。
+- 周期再同期時は有効NodeStatusから対象を再構築し、消失ノードを除外する。
+- 引数なしの通常buildはM5StickS3だけを対象とし、native環境はPlatformIO Test Runner専用であることを明記した。
+- focused native test 21/21、全native test 89/89、native_t009 10/10、M5StickS3 clean/full build、`git diff --check`が成功した。
+- M5StickS3 build使用量はRAM 68,760 / 327,680バイト、Flash 1,234,979 / 3,342,336バイトである。
+- ユーザー指示により通常レビューと独立レビューは実施していない。
 
 ## 実機保留項目
 

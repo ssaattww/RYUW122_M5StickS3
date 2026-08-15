@@ -293,18 +293,16 @@ void OnReceive(
 | --- | --- |
 | `info->src_addr` | 送信元の検証とノード特定 |
 | `info->des_addr` | ブロードキャストとユニキャストの識別 |
-| `info->rx_ctrl->timestamp` | NTPの`t2`または`t4`と測距命令受信時刻 |
 | `info->rx_ctrl->rssi` | ESP-NOWリンク品質記録 |
 | `info->rx_ctrl->channel` | NVS設定チャンネルとの一致確認 |
 
-`rx_ctrl`がnullの場合は、コールバック冒頭の`esp_timer_get_time()`下位32bitを受信時刻として使用し、時刻品質を低下状態として記録する。
+受信時刻は`rx_ctrl`の有無にかかわらず、受信コールバック内で取得した`esp_timer_get_time()`の下位32bitを使用する。
+`rx_ctrl->timestamp`は使用せず、`rx_ctrl`はRSSI、受信チャンネル、受信制御情報の有無だけに使用する。
+`rx_ctrl`がnullの場合も受信時刻は取得できるが、無線メタデータを検証できないため時刻品質を低下状態として記録する。
 
-ESP-IDFの`wifi_pkt_rx_ctrl_t::timestamp`は32bitマイクロ秒であり、約71分で折り返す。
+受信packetへ保存するESP Timer時刻は32bitマイクロ秒であり、約71分で折り返す。
 差分は符号付き32bitのmodulo演算で求める。
 TAGへ公開する時刻は、現在のTAG時刻または測距ラウンド開始時刻に最も近い64bit時刻へ拡張する。
-
-初回実機検証では、同じ受信コールバック内で取得した`rx_ctrl->timestamp`と`esp_timer_get_time()`下位32bitの差を記録し、同一のローカル時刻として安定して扱えることを確認する。
-差が不連続になる場合は`rx_ctrl->timestamp`を独立した32bit時計として扱い、時刻品質を低下状態にする。
 
 ## 7. Wi-Fi省電力設定
 
@@ -348,10 +346,12 @@ ESP-NOW専用wake windowとwake intervalの設定は本設計の対象外とす�
 
 | 時刻 | 時計 | 取得位置 |
 | --- | --- | --- |
-| `t1` | マスターTAG | 同期要求の`esp_now_send()`直前 |
-| `t2` | 対象ノード | 同期要求受信時の`rx_ctrl->timestamp` |
-| `t3` | 対象ノード | 同期応答の`esp_now_send()`直前 |
-| `t4` | マスターTAG | 同期応答受信時の`rx_ctrl->timestamp` |
+| `t1` | マスターTAGのESP Timer | 同期要求の`esp_now_send()`直前 |
+| `t2` | 対象ノードのESP Timer | 同期要求の受信コールバック内 |
+| `t3` | 対象ノードのESP Timer | 同期応答の`esp_now_send()`直前 |
+| `t4` | マスターTAGのESP Timer | 同期応答の受信コールバック内 |
+
+各ノード内の送受信時刻は同じESP Timer時計domainに統一し、`rx_ctrl->timestamp`と混在させない。
 
 対象ノード時計からマスターTAG時計へのオフセットを次の式で求める。
 
@@ -393,8 +393,8 @@ NTP同期中は同一ノードから複数のESP-NOW送信を同時に保留し�
 - 同じ応答を重複受信した
 
 1サンプル以上成功した場合は最小往復遅延サンプルを採用する。
-全サンプルが失敗したANCHORは、そのマスターセッションの測距経路へ含めない。
-全サンプルが失敗したフォロワーTAGも、そのマスターセッションの測距経路へ含めない。
+3サンプルすべてが失敗した対象は同期完了扱いにせず、1秒後に3サンプルの取得を再試行する。
+全対象が正常に同期するまでマスターの同期完了gateはfalseを維持する。
 
 ### 8.3 マスターTAG変更
 
@@ -1038,6 +1038,8 @@ masterTagId + master MAC + sessionId + roundId + anchorIndex + tagIndex
 | --- | --- |
 | NTP応答待ち | 100ms |
 | NTPサンプル数 | 3回 |
+| NTP失敗対象の再試行待ち | 1秒 |
+| NTP周期再同期 | 正常同期完了から30秒 |
 | UWB測距待ち | 300ms |
 | ESP-NOW送信完了待ち | 50ms |
 | NodeStatus有効期間 | 30秒 |
@@ -1069,11 +1071,11 @@ Unsynchronized
 ```
 
 Wi-Fi省電力が有効な場合、NTP計算自体が成功しても`PowerSaveEnabled`とする。
-`rx_ctrl->timestamp`が取得できない場合は`ReceiveTimestampUnavailable`とする。
+受信時刻自体はESP Timerから常に取得するが、`rx_ctrl`が取得できず受信制御情報の有無を示すfieldがfalseの場合は`ReceiveTimestampUnavailable`とする。
 
-初期実装ではマスターTAG変更時だけ必須再同期を行う。
 同期からの経過時間はすべての逐次結果へ含める。
-長時間運転時の周期的再同期は、実機で時計ドリフトを測定した後に追加判断する。
+正常同期完了から30秒ごとに、その時点で有効なNodeStatusから全非master対象を再構築して再同期する。
+再同期開始時は同期完了gateをfalseにし、実行中roundを完了した後は次roundを開始せず再同期完了を待つ。
 
 ## 18. main.cppとの境界
 
@@ -1157,14 +1159,16 @@ master session変更時はANCHOR別measurement一覧と表示品質を破棄す�
 ### 19.4 late node同期
 
 masterは初回対象が0件の場合も同期完了として待機でき、その後に有効なNodeStatusを受信すると未追跡ノードをID昇順で同期対象へ追加する。
-既存ノードへ同じsession内で周期的な再同期は行わない。
+正常同期完了から30秒後は現在有効なNodeStatusから対象一覧を再構築し、全非masterノードを同じsession内で周期的に再同期する。
+再構築時に消失したノードは同期対象と公開同期情報から除外し、同じIDとMACの有効ノードは進行中round向けの採用済み同期情報を再同期完了まで保持する。
+再同期を開始すると同期完了gateをfalseにし、全対象の正常同期後にtrueへ戻す。
 master変更時は全同期状態を破棄し、新sessionで全対象を3サンプルから同期し直す。
 
 ### 19.5 実装済み、未実装、保留
 
-最小TAG選出、NTP四時刻同期、全非masterへのcommit、3 ANCHOR×2 TAGを含む逐次測距、逐次公開、round完了、基本timeout、master変更時resetは実装済みである。
+最小TAG選出、NTP四時刻同期、全非masterへのcommit、失敗対象の1秒再試行、30秒周期再同期、3 ANCHOR×2 TAGを含む逐次測距、逐次公開、round完了、基本timeout、master変更時resetは実装済みである。
 
-EKF、座標計算、アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧、同期期限による`SynchronizationExpired`への自動遷移、周期的再同期は未実装である。
+EKF、座標計算、アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧、同期期限による`SynchronizationExpired`への自動遷移は未実装である。
 複数実機での無線順序、packet loss、queue飽和、時計ドリフト、画面視認性、NT-Shell同時操作、Wi-Fi省電力ON/OFFの時刻品質差は実機検証へ保留する。
 
 ## 20. コーディング規約
