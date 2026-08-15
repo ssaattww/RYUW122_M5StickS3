@@ -84,7 +84,8 @@ jobs:
               -e native_t007 \
               -e native_t008 \
               -e native_t009 \
-              -e native_t015
+              -e native_t015 \
+              -e native_tag_position
           run_and_capture sticks3-clean \
             platformio run -e m5stack-sticks3 -t clean
           run_and_capture sticks3-build \
