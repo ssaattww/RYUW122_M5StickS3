@@ -14,6 +14,9 @@
 #include "SequentialRangingController.h"
 #include "SequentialRangingDisplay.h"
 #include "TagMasterCoordinator.h"
+#include "TagPositionGraphRenderer.h"
+#include "TagPositionInput.h"
+#include "TagPositionViewController.h"
 
 namespace
 {
@@ -274,10 +277,14 @@ void RangingDisplayTaskController::PublishDiagnostics()
 void RangingDisplayTaskController::RunDisplayTask()
 {
     SequentialRangingDisplaySnapshot snapshot{};
+    TagPositionViewController positionViewController;
+    bool hasSnapshot = false;
     for (;;)
     {
         M5.update();
         FlushDiagnostics();
+
+        bool redrawRequired = false;
         SequentialRangingDisplaySnapshot receivedSnapshot{};
         if (xQueueReceive(
                 m_snapshotQueue,
@@ -285,9 +292,31 @@ void RangingDisplayTaskController::RunDisplayTask()
                 0U) == pdTRUE)
         {
             snapshot = receivedSnapshot;
+            hasSnapshot = true;
+            redrawRequired = true;
+        }
+
+        if (hasSnapshot && positionViewController.Update(
+                snapshot.m_mode,
+                TagPositionInput::WasTogglePressed()))
+        {
+            redrawRequired = true;
+        }
+
+        if (hasSnapshot && redrawRequired)
+        {
             m_canvas.fillSprite(TFT_BLACK);
             DrawStatus(snapshot);
-            m_display.Draw(snapshot);
+            if (positionViewController.GetPage() ==
+                    EnTagPositionDisplayPage::PositionGraph &&
+                TagPositionGraphRenderer::CanDraw(snapshot))
+            {
+                TagPositionGraphRenderer::Draw(snapshot, m_canvas);
+            }
+            else
+            {
+                m_display.Draw(snapshot);
+            }
             m_canvas.pushSprite(0, 0);
         }
         vTaskDelay(1U);
