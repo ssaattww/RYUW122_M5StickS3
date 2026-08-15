@@ -37,6 +37,8 @@ classDiagram
     class SequentialRangingProtocolCodec
     class SequentialRangingController
     class SequentialRangingDisplay
+    class RangingDisplayTaskController
+    class M5Canvas
 
     ConfigPreference --> NvsPreferenceStore : typed NVS access
     ConfigRuntime --> ConfigPreference : Init()
@@ -69,6 +71,18 @@ classDiagram
 
     SequentialRangingDisplay --> SequentialRangingController : events / state
     SequentialRangingDisplay --> EspNowBroadcast : received nodes
+    SequentialRangingDisplay --> NtpTimeSynchronizer : current master time
+    SequentialRangingDisplay --> M5Canvas : snapshot drawing
+
+    RangingDisplayTaskController --> EspNowTransport : high-priority update
+    RangingDisplayTaskController --> EspNowReceiveQueueTerminator : RX ownership cycle
+    RangingDisplayTaskController --> EspNowBroadcast : high-priority update
+    RangingDisplayTaskController --> TagMasterCoordinator : high-priority update
+    RangingDisplayTaskController --> NtpTimeSynchronizer : high-priority update
+    RangingDisplayTaskController --> Ryuw122Controller : high-priority update
+    RangingDisplayTaskController --> SequentialRangingController : high-priority update
+    RangingDisplayTaskController --> SequentialRangingDisplay : snapshot / draw
+    RangingDisplayTaskController --> M5Canvas : sprite transfer / failure display
 ```
 
 図の矢印は、矢印元が矢印先を利用する依存を表す。`NtShellThread`と`Ryuw122HardwarePort`は公開ヘッダーから直接生成するクラスではなく、実装内部のクラスである。
@@ -79,14 +93,14 @@ classDiagram
 | --- | --- | --- | --- |
 | `NvsPreferenceStore` | 値用名前空間と型メタデータ用名前空間を使い、型付きNVS値を保存・取得・列挙する。公開操作は再帰ミューテックスで排他する | ESP-IDF NVS | `ConfigPreference`, `PreferenceCommands` |
 | `ConfigPreference` | アプリケーション固有のNVSキー、既定値、型付きget/setを提供する | `NvsPreferenceStore` | `ConfigRuntime`, `main.cpp` |
-| `ConfigRuntime` | 起動時にNVSから読み出した設定と、実行中に変更する現在値をメモリ上で保持する | `ConfigPreference`は`Init()`時のみ | `EspNowBroadcast`, `NtpTimeSynchronizer`, `Ryuw122Controller`, `main.cpp` |
+| `ConfigRuntime` | 起動時にNVSから読み出した設定をメモリ上で保持する。mode変更は再起動後の`Init()`で反映する | `ConfigPreference`は`Init()`時のみ | `EspNowBroadcast`, `NtpTimeSynchronizer`, `Ryuw122Controller`, `main.cpp` |
 | `PreferenceCommands` | `pref`コマンド群を生成し、NT-Shellから型付きNVSを操作する | `NvsPreferenceStore`, `NtShell::Command` | `main.cpp`から`NtShell`へ登録 |
 | `NtShell` | 外部定義されたコマンドを登録し、NT-Shell処理を専用スレッドで開始する公開窓口 | `NtShell::NtShellThread` | `main.cpp` |
 | `NtShell::NtShellThread` | NT-Shellのブロッキング実行、Stream入出力、コマンド検索・dispatchを専用`std::thread`上で処理する | NT-Shellライブラリ, `Stream` | `NtShell`が所有 |
 | `NodeStatusCodec` | `NodeStatus`と29バイト固定wire形式を相互変換し、magic/version/typeなどを検証する | なし | `EspNowBroadcast` |
 | `EspNowTransport` | Wi-Fi/ESP-NOW初期化、peer管理、固定長送受信queue、1件in-flightの送信進行、受信メタデータの固定長コピーを担当する | ESP-IDF Wi-Fi/ESP-NOW/FreeRTOS queue | `EspNowBroadcast`, `NtpTimeSynchronizer`, `SequentialRangingController`, `EspNowReceiveQueueTerminator` |
 | `EspNowBroadcast` | 自ノードの`NodeStatus`を定期送信し、受信した`NodeStatus`をMACアドレス別のノード表と最終受信時刻へ保存する | `EspNowTransport`, `ConfigRuntime`, `NodeStatusCodec` | `TagMasterCoordinator`, `NtpTimeSynchronizer`, `SequentialRangingController`, `SequentialRangingDisplay` |
-| `EspNowReceiveQueueTerminator` | 既知consumer処理後の共有ESP-NOW受信FIFOに最終所有境界を設け、誰も消費しなかった先頭packetを1 cycle最大1件破棄する | `EspNowTransport` | `main.cpp` |
+| `EspNowReceiveQueueTerminator` | 既知consumer処理後の共有ESP-NOW受信FIFOに最終所有境界を設け、誰も消費しなかった先頭packetを1 cycle最大1件破棄する | `EspNowTransport` | `RangingDisplayTaskController` |
 | `TagMasterCoordinator` | 有効なTAGの最小ノードIDをマスターとして選出し、自ノードのmaster/follower判定、session ID、マスター変更通知を管理する | `EspNowBroadcast` | `NtpTimeSynchronizer`, `SequentialRangingController` |
 | `NtpTimeProtocolCodec` | NTP同期要求、応答、commitの固定wire形式をencode/decodeし、headerを検証する | なし | `NtpTimeSynchronizer` |
 | `NtpTimeSynchronizer` | マスターTAGと非マスターノード間のNTP四時刻同期、3サンプルからの最小RTT選択、同期結果通知、32bitローカル時刻から64bitマスター時刻への変換を担当する | `EspNowTransport`, `EspNowBroadcast`, `TagMasterCoordinator`, `ConfigRuntime`, `NtpTimeProtocolCodec` | `SequentialRangingController` |
@@ -94,8 +108,9 @@ classDiagram
 | `Ryuw122HardwarePort` | `HardwareSerial`とRYUW122ライブラリを`IRyuw122Port`へ接続し、UART行解析と固定長応答FIFOを実装する | `HardwareSerial`, RYUW122ライブラリ | `Ryuw122Controller`が実機用constructorで所有 |
 | `Ryuw122Controller` | RYUW122のモード、network ID、address初期化と、ANCHORからTAGへの非同期測距、300ms timeout、遅延応答排出を管理する | `ConfigRuntime`, `IRyuw122Port` | `SequentialRangingController`, `main.cpp` |
 | `SequentialRangingProtocolCodec` | `RangeControl`、測距結果、forward結果、round completeの固定wire形式をencode/decode・検証する | なし | `SequentialRangingController` |
-| `SequentialRangingController` | master/follower/ANCHORの役割別状態機械、ANCHOR×TAGの二重ループ、逐次結果公開、round管理、時刻変換、優先度別送信FIFOを統括する | `EspNowTransport`, `EspNowBroadcast`, `TagMasterCoordinator`, `NtpTimeSynchronizer`, `Ryuw122Controller`, `SequentialRangingProtocolCodec` | `SequentialRangingDisplay`, `main.cpp` |
-| `SequentialRangingDisplay` | controllerの最新測距結果・round summary・状態と、broadcastの受信ノード一覧を表示状態へ取り込み、`M5Canvas`へ描画する | `SequentialRangingController`, `EspNowBroadcast`, `M5Canvas` | `main.cpp` |
+| `SequentialRangingController` | master/follower/ANCHORの役割別状態機械、ANCHOR×TAGの二重ループ、逐次結果公開、round管理、時刻変換、優先度別送信FIFOを統括する | `EspNowTransport`, `EspNowBroadcast`, `TagMasterCoordinator`, `NtpTimeSynchronizer`, `Ryuw122Controller`, `SequentialRangingProtocolCodec` | `SequentialRangingDisplay`, `RangingDisplayTaskController` |
+| `SequentialRangingDisplay` | 高優先度taskでcontrollerの最新測距結果・round summary・状態、broadcastの受信ノード一覧、現在master時刻を表示modelへ取り込み、固定長snapshotを生成する。低優先度taskではsnapshotだけを`M5Canvas`へ描画する | `SequentialRangingController`, `EspNowBroadcast`, `NtpTimeSynchronizer`, `M5Canvas` | `RangingDisplayTaskController` |
+| `RangingDisplayTaskController` | core 1・priority 4の通信/同期/測距/model更新taskと、core 0・priority 1のM5更新/描画/sprite転送taskを開始・停止する。両task間はcapacity 1のsnapshot queueで同期し、開始失敗時は部分生成物を破棄して永続診断を描画する | 通信・同期・測距・表示の各controller、`M5Canvas`, FreeRTOS task/queue | `main.cpp` |
 
 ## 4. 設定系の関係
 
@@ -111,7 +126,8 @@ NvsPreferenceStore
 
 `PreferenceCommands`は同じ`NvsPreferenceStore`へ書き込むが、`ConfigRuntime`へ自動反映する機構は持たない。現在の`pref`設定変更は次回起動時の`ConfigRuntime::Init()`で反映される。
 
-`main.cpp`のBtnA処理によるTAG/ANCHOR切替は`ConfigRuntime::SetRunMode()`だけを呼び、NVSへ保存しない。
+本体ボタンによるruntime TAG/ANCHOR切替は行わない。
+modeを変更する場合はNT-Shellの`pref set run_mode`でNVSを更新して再起動し、次回の`ConfigRuntime::Init()`、RYUW122初期化、NodeStatus、protocol状態へ一貫して反映する。
 
 ## 5. ESP-NOW共有transportと受信所有境界
 
@@ -119,7 +135,7 @@ ESP-NOW callbackを登録して無線を所有するクラスは`EspNowTransport
 
 `EspNowTransport`は受信packetを共通FIFOへ固定長コピーする。`EspNowBroadcast`、`NtpTimeSynchronizer`、`SequentialRangingController`はFIFO先頭を`PeekReceive()`で確認し、自分が扱うpacket種別の場合だけ`ConsumeReceive()`で削除する。自分のpacket種別でない場合は先頭を残して後続consumerへ処理機会を渡す。
 
-現在の`loop()`での関係は次の順序である。
+core 1・priority 4の高優先度測距taskでの関係は次の順序である。
 
 ```mermaid
 flowchart TD
@@ -130,8 +146,21 @@ flowchart TD
     E --> F[Ryuw122Controller.Update]
     F --> G[SequentialRangingController.Update]
     G --> H[EspNowReceiveQueueTerminator.Update]
-    H --> I[SequentialRangingDisplay.Update / Draw]
+    H --> I[SequentialRangingDisplay.Update / CaptureSnapshot]
 ```
+
+`CaptureSnapshot()`はcapacity 1のFreeRTOS queueへ最新snapshotを上書きする。
+core 0・priority 1の低優先度画面taskは、次の順序だけを担当する。
+
+```mermaid
+flowchart TD
+    A[M5.update] --> B[Latest snapshot receive]
+    B --> C[SequentialRangingDisplay.Draw]
+    C --> D[M5Canvas.pushSprite]
+```
+
+画面taskはcontroller、broadcast、NTP、RYUW122の状態やFIFOへ直接触れない。
+Arduinoの`loop()`は通信・測距・描画を実行せず、専用taskへ実行権を渡す待機だけを行う。
 
 共有受信FIFOを直接扱う既知consumerは次の3クラスである。
 
@@ -207,7 +236,9 @@ classDiagram
 
 主な出力は、固定長FIFOから`TryTakeMeasurement()`で取得する`TimedRangeMeasurement`と、`TryTakeCompletedRound()`で取得する`SequentialRangeRoundSummary`である。
 
-現在のUIでは`SequentialRangingDisplay`がこれらを取り出して最新表示状態として保持する。さらに`EspNowBroadcast::GetNodes()`から受信ノード一覧を取得する。表示側は無線送信、マスター選出、時刻変換、UWB測距を実行しない。
+高優先度taskでは`SequentialRangingDisplay`がこれらを取り出して最新表示modelとして保持し、`EspNowBroadcast::GetNodes()`の受信ノード一覧と`NtpTimeSynchronizer`の現在master時刻を反映する。
+modelは固定長`SequentialRangingDisplaySnapshot`へコピーされ、capacity 1のqueueで低優先度画面taskへ渡される。
+画面taskはsnapshotだけを描画するため、無線送信、マスター選出、時刻変換、UWB測距を実行しない。
 
 `SequentialRangingController::GetResetGeneration()`が変化した場合、`SequentialRangingDisplay`は旧sessionの保持済みmeasurement/summaryを破棄する。
 
@@ -239,6 +270,7 @@ SequentialRangingProtocolCodec
 SequentialRangingController
 EspNowReceiveQueueTerminator
 SequentialRangingDisplay
+RangingDisplayTaskController
 ```
 
 `setup()`の主要な開始順は次のとおりである。
@@ -251,12 +283,17 @@ EspNowTransport.Begin
 EspNowBroadcast.Begin
 TagMasterCoordinator.Begin
 SequentialRangingController.Begin
-SequentialRangingDisplay initialization/update/draw
+SequentialRangingDisplay.SetInitializationHealth
 NtShell.RegisterCommands
 NtShell.Start
+RangingDisplayTaskController.Begin
+Begin失敗時はRangingDisplayTaskController.ShowTaskStartFailure
 ```
 
 `SequentialRangingController::Begin()`はESP-NOW transport/broadcastの開始に成功し、かつ`Ryuw122Controller::Begin()`が成功した場合だけ呼び出す。`TagMasterCoordinator::Begin()`はESP-NOW開始成功時に呼び出す。
+`RangingDisplayTaskController::Begin()`はcapacity 1のsnapshot queue、高優先度測距task、低優先度画面taskを順に作成する。
+作成途中で失敗した場合は`End()`が作成済みtaskを停止してからqueueを解放し、`main.cpp`がfalseの戻り値を判定して`TASK START FAILED`を画面へ永続表示する。
+開始後のArduino `loop()`は1秒待機だけを繰り返す。
 
 ## 11. クラス境界の要約
 
@@ -264,6 +301,7 @@ NtShell.Start
 - ESP-NOW callbackとqueue所有は`EspNowTransport`へ集約し、上位consumerは共有FIFOをpacket種別ごとに協調して消費する。
 - ノード表は`EspNowBroadcast`、master/sessionは`TagMasterCoordinator`、時計差は`NtpTimeSynchronizer`がそれぞれ所有する。
 - RYUW122のUART詳細は`IRyuw122Port`境界の内側へ閉じ込め、逐次測距は`Ryuw122Controller`の非同期APIだけを使用する。
-- 測距round全体の状態機械は`SequentialRangingController`へ集約し、表示は`SequentialRangingDisplay`へ分離する。
+- 測距round全体の状態機械は`SequentialRangingController`へ集約し、表示modelとsnapshot描画は`SequentialRangingDisplay`へ分離する。
+- 通信・同期・測距・表示model更新と画面転送のtask所有、capacity 1 snapshot queue、開始失敗cleanupは`RangingDisplayTaskController`へ集約する。
 - wire形式変換は`NodeStatusCodec`、`NtpTimeProtocolCodec`、`SequentialRangingProtocolCodec`へ分離する。
 - NT-Shellのブロッキング実行は専用スレッドへ分離し、コマンド実装は`PreferenceCommands`から外部登録する。

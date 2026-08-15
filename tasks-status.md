@@ -19,10 +19,10 @@
 ## 現在位置
 
 - 現在フェーズ: なし
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013, T-014, T-015
 - 次タスク: なし
 - 次タスク状態: 全タスク完了
-- ブランチ: `codex/measurement-start-sequence`
+- ブランチ: `codex/display-three-nodes-tag-results`
 
 ## タスク一覧
 
@@ -40,6 +40,9 @@
 | T-010 | P6 | sol high最終レビューと必要修正 | M | T-009 | 完了 | 本タスクのコミット |
 | T-011 | P7 | RYUW122 GPIO8リセット復旧 | M | T-010 | 完了 | 本タスクのコミット |
 | T-012 | P8 | 計測開始シーケンスと実装範囲の明文化 | S | T-011 | 完了 | 本タスクのコミット |
+| T-013 | P9 | 接続先3件とTAG全ANCHOR測距結果・統一時刻の画面表示 | M | T-012 | 完了 | 本タスクのコミット |
+| T-014 | P10 | NTP時計基準統一と定期再同期 | M | T-004, T-013 | 完了 | 本タスクのコミット |
+| T-015 | P11 | 測距処理と画面描画のFreeRTOSタスク分離 | L | T-014 | 完了 | 本タスクのコミット |
 
 ## タスク詳細
 
@@ -499,6 +502,141 @@
 - 距離結果の集約・逐次公開・対象TAG転送までが実装済みで、座標計算、EKF、永続履歴は未実装であることを明記した。
 - 製品コードとテストコードは変更していない。
 - Markdown lintはrepository配線がないためunsupported、構造・code fence・末尾空白・差分検査は成功した。
+
+### T-013 接続先3件とTAG全ANCHOR測距結果・統一時刻の画面表示
+
+変更対象:
+
+- `include/SequentialRangingDisplay.h`
+- `src/SequentialRangingDisplay.cpp`
+- `include/NtpTimeSynchronizer.h`
+- `src/NtpTimeSynchronizer.cpp`
+- `src/main.cpp`のcomposition
+- `test/test_t008/`以下の関連テスト
+- `docs/sequential-ranging-time-sync.md`
+- `docs/feature-list.md`
+
+実施内容:
+
+- 受信済みNodeStatusの画面表示上限を2件から3件へ拡張する。
+- TAGでは、自ノードへ公開された測距結果をANCHOR IDごとに最大8件保持し、全ANCHORの最新距離を画面へ表示する。
+- 各ANCHORの距離とともに、マスターTAG基準の計測完了時刻を表示する。
+- TAG画面にマスターTAG基準の現在時刻を表示する。
+- 表示判断、一覧保持、描画を`SequentialRangingDisplay`へ集約し、`main.cpp`は依存注入と表示クラス呼び出しだけに保つ。
+
+完了条件:
+
+- 接続先3件が同時に画面へ描画されることをホストテストで確認できる。
+- マスターTAGでは他TAG向け結果を除外し、フォロワーTAGでは自TAG向け転送結果を使用して、全ANCHORの最新距離をホストテストで確認できる。
+- 各ANCHOR行のマスター基準計測時刻と、TAG画面のマスター基準現在時刻を確認できる。
+- ANCHOR表示と既存初期化失敗表示に回帰がない。
+- 全追加・変更関数へ日本語Doxygenがある。
+- PlatformIO native testとM5StickS3 clean/full buildが成功する。
+- T-013だけのコミットを作成する。
+
+通常レビューfinding:
+
+- T013-NR-001 Medium: 未同期measurementを有効なマスター時刻のように表示せず、現在時刻と計測時刻を共通の表示基準へそろえる。
+
+結果:
+
+- TAGは自TAG向けmeasurementだけをANCHOR ID別に最大8件保持し、ANCHOR ID昇順で距離または失敗状態とマスター基準計測時刻を表示する。
+- マスターTAGが収集した他TAG向け結果を除外し、フォロワーTAGは自TAG向け転送結果を表示する。
+- 現在のマスター基準時刻を`NOW`行へ表示し、未同期時は`UNSYNC`とする。
+- 受信NodeStatusの先頭3件と最大8 ANCHOR結果が135×240画面内に収まる。
+- `main.cpp`の変更は既存`NtpTimeSynchronizer`を表示クラスへ注入するcomposition 1行だけである。
+- T013-NR-001 Mediumは修正済みで、fix verificationは`pass_with_held`、新規findingとunexploredはない。
+- focused native_t004 16/16、native_t008 12/12、全native 84/84、M5StickS3 clean/full build、`git diff --check`が成功した。
+- M5StickS3 build使用量はRAM 68,624 / 327,680 bytes、Flash 1,234,447 / 3,342,336 bytesである。
+- 実機での最大8 ANCHOR通信、文字視認性、ちらつき、長時間折り返しは保留する。
+
+### T-014 NTP時計基準統一と定期再同期
+
+変更対象:
+
+- `src/EspNowTransport.cpp`
+- `include/NtpTimeSynchronizer.h`
+- `src/NtpTimeSynchronizer.cpp`
+- `test/test_t004/`以下の関連テスト
+- `docs/sequential-ranging-time-sync.md`
+- `docs/feature-list.md`
+
+実施内容:
+
+- NTP四時刻の`t1`から`t4`を同じESP Timer時計基準へ統一する。
+- 後から起動したノードをNodeStatus検出後に同期対象へ追加する。
+- 初回同期失敗時は短い待機後に再試行する。
+- 正常同期後も30秒ごとに現在有効なノード一覧を再構築して再同期する。
+- 再同期開始後は現在の測距ラウンドを完了し、次ラウンド開始前に同期完了を要求する。
+- 通常buildの既定対象をM5StickS3に限定し、テスト専用native環境の誤リンクを防止する。
+
+完了条件:
+
+- MAC受信タイムスタンプとESP TimerをNTP四時刻計算内で混在させない。
+- 遅れて起動したANCHORが再起動なしで同期・測距対象へ追加される。
+- 同期失敗対象が1秒後に再試行され、正常同期対象は30秒後に再同期される。
+- 引数なしの通常buildで`native_t009`をリンクせず、`platformio test -e native_t009`は成功する。
+- 全追加・変更関数へ日本語Doxygenがある。
+- focused native test、全native test、M5StickS3 clean/full buildが成功する。
+
+結果:
+
+- NTP四時刻をESP Timer時計基準へ統一し、`rx_ctrl`はRSSI、チャンネル、受信制御情報の有無だけに使用する。
+- 後参加ノードを即時追加し、同期失敗対象は1秒後、正常同期対象は30秒後に再同期する。
+- 周期再同期時は有効NodeStatusから対象を再構築し、消失ノードを除外する。
+- 引数なしの通常buildはM5StickS3だけを対象とし、native環境はPlatformIO Test Runner専用であることを明記した。
+- focused native test 21/21、全native test 89/89、native_t009 10/10、M5StickS3 clean/full build、`git diff --check`が成功した。
+- M5StickS3 build使用量はRAM 68,760 / 327,680バイト、Flash 1,234,979 / 3,342,336バイトである。
+- ユーザー指示により通常レビューと独立レビューは実施していない。
+
+### T-015 測距処理と画面描画のFreeRTOSタスク分離
+
+変更対象:
+
+- `src/main.cpp`
+- 必要なタスク実行・表示同期クラス
+- `include/SequentialRangingDisplay.h`
+- `src/SequentialRangingDisplay.cpp`
+- 関連ホストテスト
+- `docs/sequential-ranging-time-sync.md`
+- `docs/feature-list.md`
+
+実施内容:
+
+- ESP-NOW、時刻同期、RYUW122、逐次測距を高優先度のFreeRTOSタスクへ分離する。
+- 画面描画とsprite転送を低優先度タスクへ分離し、測距処理を待たせない。
+- 測距結果の取り込みと描画用状態の共有を競合なく行う。
+- ANCHORの`RANGE`表示が実際の測距状態を越えて残らないようにする。
+- `main.cpp`を初期化とタスクcompositionに限定する。
+
+完了条件:
+
+- 画面描画中も測距更新タスクが継続できる。
+- 測距タスクの優先度が画面タスクより高い。
+- 共有表示状態にデータ競合がない。
+- ANCHORの`RANGE`表示が測距完了後に解除される。
+- 全追加・変更関数へ日本語Doxygenがある。
+- focused native test、全native test、M5StickS3 clean/full buildが成功する。
+- 通常レビューで必須修正findingが解消される。
+
+通常レビューfinding:
+
+- T015-NR-001 Medium: taskまたはqueue生成失敗時に安全に解放し、永続エラーを表示する。
+- T015-NR-002 Medium: 不完全な実行中mode切替を削除し、NVS設定後の再起動契約へ統一する。
+- T015-NR-003 Medium: production task controllerを直接compile・実行するhost testを追加する。
+- T015-NR-004 Low: P10とP11の追跡文言を正しい節へ配置する。
+
+結果:
+
+- `RangingDisplayTaskController`を追加し、通信・同期・UWB・逐次測距をcore 1・優先度4、M5入力・描画・sprite転送をcore 0・優先度1へ分離した。
+- 容量1の固定長snapshot queueにより、低優先度画面taskがprotocol所有objectへ直接アクセスしない構成にした。
+- ANCHORの`RANGE`から`IDLE`へのsnapshot更新をhost testで確認した。
+- task開始失敗時は部分生成済みresourceを解放し、`TASK START FAILED`を永続表示する。
+- runtime mode切替を廃止し、NT-ShellでNVSを変更して再起動したときだけ反映する契約へ統一した。
+- T015-NR-001からT015-NR-004はすべてresolved、fix verificationは`pass_with_held`、新規findingとunexploredはない。
+- focused test 19/19、全native test 96/96、M5StickS3 clean/full build、`git diff --check`が成功した。
+- M5StickS3 build使用量はRAM 68,808 / 327,680 bytes、Flash 1,236,167 / 3,342,336 bytesである。
+- 実機のtask scheduling、sprite転送中の測距継続、`RANGE`解除体感、stack余裕、Wi-Fi/UWB実通信は保留する。
 
 ## 実機保留項目
 

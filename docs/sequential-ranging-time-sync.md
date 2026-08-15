@@ -82,6 +82,9 @@ ESP-NOWの受信処理はプロジェクト側の`EspNowTransport`へ集約す�
 `EspNowTransport`はESP-IDFの`esp_now_recv_info_t`を直接受け取り、受信コールバック内では固定長データのコピーとキュー投入だけを行う。
 時刻同期、UWB測距、パケット解析、画面描画は受信コールバック内で行わない。
 
+通常運転中の通信、時刻同期、UWB測距、逐次測距、表示model更新は高優先度FreeRTOSタスクへ集約する。
+M5入力、Canvas描画、sprite転送は低優先度FreeRTOSタスクだけが行い、画面転送中も高優先度タスクを継続できる構成とする。
+
 ノード状態のブロードキャストと順次測距は同じESP-NOWインスタンスを共有する。
 ESP-NOWの受信コールバックを複数のクラスが個別登録してはならない。
 
@@ -270,11 +273,13 @@ TAG側とANCHOR側の順次測距状態機械を担当する。
 | `include/EspNowTransport.h` | `src/EspNowTransport.cpp` | raw ESP-NOW、受信情報コピー、固定長FIFO送信 |
 | `include/EspNowBroadcast.h` | `src/EspNowBroadcast.cpp` | NodeStatusと`m_nodes` |
 | `include/TagMasterCoordinator.h` | `src/TagMasterCoordinator.cpp` | 最小TAG IDによるマスター選出 |
-| `include/NtpTimeSynchronizer.h` | `src/NtpTimeSynchronizer.cpp` | NTP四時刻同期と時刻変換 |
+| `include/NtpTimeSynchronizer.h` | `src/NtpTimeSynchronizer.cpp` | NTP四時刻同期、時刻変換、現在マスター時刻取得 |
 | `include/Ryuw122Initializer.h` | `src/Ryuw122Initializer.cpp` | UART開始、GPIO8 NRST復旧、AT疎通と設定 |
 | `include/Ryuw122Controller.h` | `src/Ryuw122Controller.cpp` | 初期化後の非同期UWB測距 |
 | `include/SequentialRangingController.h` | `src/SequentialRangingController.cpp` | 二重ループ測距と逐次結果公開 |
 | `include/SequentialRangingProtocolCodec.h` | `src/SequentialRangingProtocolCodec.cpp` | `SequentialRangingProtocolCodec`によるwire packetのencode、decode、検証 |
+| `include/SequentialRangingDisplay.h` | `src/SequentialRangingDisplay.cpp` | 表示model、固定長snapshot、snapshot描画 |
+| `include/RangingDisplayTaskController.h` | `src/RangingDisplayTaskController.cpp` | 測距更新タスクと画面タスクの実行、task間queue |
 
 ## 6. ESP-NOW受信情報
 
@@ -293,18 +298,16 @@ void OnReceive(
 | --- | --- |
 | `info->src_addr` | 送信元の検証とノード特定 |
 | `info->des_addr` | ブロードキャストとユニキャストの識別 |
-| `info->rx_ctrl->timestamp` | NTPの`t2`または`t4`と測距命令受信時刻 |
 | `info->rx_ctrl->rssi` | ESP-NOWリンク品質記録 |
 | `info->rx_ctrl->channel` | NVS設定チャンネルとの一致確認 |
 
-`rx_ctrl`がnullの場合は、コールバック冒頭の`esp_timer_get_time()`下位32bitを受信時刻として使用し、時刻品質を低下状態として記録する。
+受信時刻は`rx_ctrl`の有無にかかわらず、受信コールバック内で取得した`esp_timer_get_time()`の下位32bitを使用する。
+`rx_ctrl->timestamp`は使用せず、`rx_ctrl`はRSSI、受信チャンネル、受信制御情報の有無だけに使用する。
+`rx_ctrl`がnullの場合も受信時刻は取得できるが、無線メタデータを検証できないため時刻品質を低下状態として記録する。
 
-ESP-IDFの`wifi_pkt_rx_ctrl_t::timestamp`は32bitマイクロ秒であり、約71分で折り返す。
+受信packetへ保存するESP Timer時刻は32bitマイクロ秒であり、約71分で折り返す。
 差分は符号付き32bitのmodulo演算で求める。
 TAGへ公開する時刻は、現在のTAG時刻または測距ラウンド開始時刻に最も近い64bit時刻へ拡張する。
-
-初回実機検証では、同じ受信コールバック内で取得した`rx_ctrl->timestamp`と`esp_timer_get_time()`下位32bitの差を記録し、同一のローカル時刻として安定して扱えることを確認する。
-差が不連続になる場合は`rx_ctrl->timestamp`を独立した32bit時計として扱い、時刻品質を低下状態にする。
 
 ## 7. Wi-Fi省電力設定
 
@@ -348,10 +351,12 @@ ESP-NOW専用wake windowとwake intervalの設定は本設計の対象外とす�
 
 | 時刻 | 時計 | 取得位置 |
 | --- | --- | --- |
-| `t1` | マスターTAG | 同期要求の`esp_now_send()`直前 |
-| `t2` | 対象ノード | 同期要求受信時の`rx_ctrl->timestamp` |
-| `t3` | 対象ノード | 同期応答の`esp_now_send()`直前 |
-| `t4` | マスターTAG | 同期応答受信時の`rx_ctrl->timestamp` |
+| `t1` | マスターTAGのESP Timer | 同期要求の`esp_now_send()`直前 |
+| `t2` | 対象ノードのESP Timer | 同期要求の受信コールバック内 |
+| `t3` | 対象ノードのESP Timer | 同期応答の`esp_now_send()`直前 |
+| `t4` | マスターTAGのESP Timer | 同期応答の受信コールバック内 |
+
+各ノード内の送受信時刻は同じESP Timer時計domainに統一し、`rx_ctrl->timestamp`と混在させない。
 
 対象ノード時計からマスターTAG時計へのオフセットを次の式で求める。
 
@@ -393,8 +398,8 @@ NTP同期中は同一ノードから複数のESP-NOW送信を同時に保留し�
 - 同じ応答を重複受信した
 
 1サンプル以上成功した場合は最小往復遅延サンプルを採用する。
-全サンプルが失敗したANCHORは、そのマスターセッションの測距経路へ含めない。
-全サンプルが失敗したフォロワーTAGも、そのマスターセッションの測距経路へ含めない。
+3サンプルすべてが失敗した対象は同期完了扱いにせず、1秒後に3サンプルの取得を再試行する。
+全対象が正常に同期するまでマスターの同期完了gateはfalseを維持する。
 
 ### 8.3 マスターTAG変更
 
@@ -1038,6 +1043,8 @@ masterTagId + master MAC + sessionId + roundId + anchorIndex + tagIndex
 | --- | --- |
 | NTP応答待ち | 100ms |
 | NTPサンプル数 | 3回 |
+| NTP失敗対象の再試行待ち | 1秒 |
+| NTP周期再同期 | 正常同期完了から30秒 |
 | UWB測距待ち | 300ms |
 | ESP-NOW送信完了待ち | 50ms |
 | NodeStatus有効期間 | 30秒 |
@@ -1069,36 +1076,44 @@ Unsynchronized
 ```
 
 Wi-Fi省電力が有効な場合、NTP計算自体が成功しても`PowerSaveEnabled`とする。
-`rx_ctrl->timestamp`が取得できない場合は`ReceiveTimestampUnavailable`とする。
+受信時刻自体はESP Timerから常に取得するが、`rx_ctrl`が取得できず受信制御情報の有無を示すfieldがfalseの場合は`ReceiveTimestampUnavailable`とする。
 
-初期実装ではマスターTAG変更時だけ必須再同期を行う。
 同期からの経過時間はすべての逐次結果へ含める。
-長時間運転時の周期的再同期は、実機で時計ドリフトを測定した後に追加判断する。
+正常同期完了から30秒ごとに、その時点で有効なNodeStatusから全非master対象を再構築して再同期する。
+再同期開始時は同期完了gateをfalseにし、実行中roundを完了した後は次roundを開始せず再同期完了を待つ。
 
 ## 18. main.cppとの境界
 
 `main.cpp`が行う処理を次に限定する。
 
-- NVSと`ConfigRuntime`の初期化
-- `EspNowTransport`の生成と開始
-- `EspNowBroadcast`の生成と更新
-- `TagMasterCoordinator`の生成と更新
-- `Ryuw122Controller`の生成と開始
-- `NtpTimeSynchronizer`の生成
-- `SequentialRangingController`の生成と更新
-- 逐次測距結果とラウンド完了情報の取得
-- 画面表示
+- 依存クラスの生成
+- M5、Canvas、Serial、NVS、`ConfigRuntime`の起動時初期化
+- ESP-NOW、NodeStatus broadcast、RYUW122、逐次測距の開始
+- NT-Shellと`RangingDisplayTaskController`の開始
+- task開始失敗時の永続画面診断
+- Arduino loop taskから定期的に実行権を譲る処理
 
-NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーンを`main.cpp`へ記述しない。
+NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーン、通常運転中の画面描画を`main.cpp`へ記述しない。
 
+`RangingDisplayTaskController`の高優先度タスクはcore 1、優先度4で通信、同期、UWB、逐次測距、表示model更新を順番に実行する。
+低優先度画面タスクはcore 0、優先度1でM5入力、Canvas描画、sprite転送を実行する。
+NT-Shellは既存の独立threadとし、測距タスクより低い優先度で動作する。
 画面描画やNT-Shell処理により、次測距または次ラウンド開始が遅延してはならない。
-マスターTAGは逐次結果を内部FIFOへ保存し、必要な次測距制御を送信キューへ入れた後、画面描画を行う。
+
+高優先度タスクから低優先度タスクへは容量1の固定長`SequentialRangingDisplaySnapshot` queueだけを渡す。
+新しいsnapshotは古い未描画snapshotを上書きし、画面遅延を測距側へ返さない。
+低優先度タスクはcontroller、broadcast、NTP、RYUW122、`ConfigRuntime`を直接参照しない。
+本体ボタンによるruntime mode変更は行わない。
+modeはNVSの`run_mode`を設定して再起動したときだけRYUW122のrole・UWB addressと全protocol状態へ反映する。
+停止時は両タスクを停止してからsnapshot queueを解放し、実行中タスクが解放済みqueueへ触れない順序とする。
+queueまたはtask作成に失敗した場合は部分生成したtaskとqueueを同じ順序で破棄し、`main.cpp`が`Begin()`失敗を判定して`TASK START FAILED`を画面へ永続表示する。
 
 ## 19. 実装同期状況
 
 ### 19.1 実装済みのgateと更新順
 
-`loop()`は`EspNowTransport`、`EspNowBroadcast`、`TagMasterCoordinator`、`NtpTimeSynchronizer`、`Ryuw122Controller`、`SequentialRangingController`、`SequentialRangingDisplay`の順に更新し、末尾の`delay(1)`で実行権を譲る。
+高優先度測距タスクは`EspNowTransport`、`EspNowBroadcast`、`TagMasterCoordinator`、`NtpTimeSynchronizer`、`Ryuw122Controller`、`SequentialRangingController`、`SequentialRangingDisplay`の順に更新し、末尾の1 tick待機で実行権を譲る。
+Arduinoの`loop()`はこれらを更新せず、専用タスクへ実行権を渡す。
 50msなどの測距slot待ちは設けていない。
 
 マスターTAGは全非マスターノードのNTP処理が完了するまで`WaitingForSynchronization`に留まる。
@@ -1123,6 +1138,7 @@ round timeoutは`ANCHOR数 * TAG数 * 300ms + ANCHOR数 * 50ms + 50ms`で計算�
 | `SequentialRangingController` | 測距結果などの低優先度送信 | 80件 |
 | `SequentialRangingController` | アプリケーション向け逐次結果 | 64件 |
 | `SequentialRangingController` | round summary | 4件 |
+| `RangingDisplayTaskController` | 最新表示snapshot | 1件、上書き |
 
 容量超過や送信失敗は診断件数へ記録する。
 初期実装の画面はqueue診断件数を表示しない。
@@ -1130,21 +1146,48 @@ round timeoutは`ANCHOR数 * TAG数 * 300ms + ANCHOR数 * 50ms + 50ms`で計算�
 ### 19.3 画面とhealth表示
 
 ステータスバーはノードID、動作モード、バッテリー残量を表示する。
-逐次測距領域はrole、状態、時刻品質、最新roundのANCHOR・TAG、結果、距離、UWB RSSI、測距時間、最新summaryの受信件数・期待件数・timeout・欠損数、受信ノード先頭2件を表示する。
+逐次測距領域はrole、状態、時刻品質と、受信ノードの`NodeMap`先頭3件を表示する。
+TAGでは`EspNowBroadcast::GetLocalStatus()`の自ノードIDと一致するmeasurementだけを、ANCHOR ID別の最新結果として最大8件の固定長配列へ保存する。
+マスターTAGが収集した他TAG向け結果は表示一覧へ入れず、フォロワーTAGはマスターから自ノード向けに転送・公開された結果を同じ一覧へ保存する。
+一覧はANCHOR ID昇順とし、成功時はANCHOR ID、距離、`rangingCompletedMasterTimeUs`由来の計測完了秒、失敗時は距離の代わりに`FAIL`、`TIMEOUT`、`MISS`を表示する。
+距離は100,000mm未満をmm、100,000,000mm未満を整数m、それ以上を整数kmとする。
+`Synchronized`、`PowerSaveEnabled`、`ReceiveTimestampUnavailable`はマスター時刻への変換自体が成功した品質であるため、有効な計測完了時刻として表示する。
+`SynchronizationExpired`、`Unsynchronized`、未知の品質値は無効とし、時刻値にかかわらず`@UNSYNC`を表示する。
+`rangingCompletedMasterTimeUs=0`は品質が有効ならマスター起動直後の正当な0秒として扱い、品質が無効なら`@UNSYNC`とする。
+
+`NtpTimeSynchronizer::TryGetCurrentMasterTime()`は、自ノードがマスターTAGならtime providerの現在値を返す。
+フォロワーTAGでは同期確定時のローカル・マスター対応点から現在ローカル時刻をマスター時刻へ変換し、マスター未選出または未同期ならfalseを返す。
+本画面で統一時刻とは、このAPIが返す現在のマスターTAG基準時刻を意味する。
+TAG画面はこの現在値をマスター基準秒の下6桁として`NOW`行へ表示し、秒が変化したときに再描画する。
+有効な計測完了時刻も同じ1,000,000秒moduloの6桁秒として表示し、`NOW`と同じ折り返し基準で比較できるようにする。
+ANCHORではTAG専用の現在時刻とANCHOR別結果一覧を表示しない。
+round summaryはcontroller FIFOから取り出すが、8 ANCHOR結果を優先するため画面には表示しない。
+
+表示判断、固定長一覧保持、単位変換、snapshot生成、snapshot描画は`SequentialRangingDisplay`へ集約する。
+表示eventとNodeStatusの取り込みは高優先度タスク上だけで実行し、低優先度タスクは固定長snapshotだけを描画する。
+このためCanvas描画中にcontrollerのmeasurement・round FIFO、broadcastのNodeStatus通知、NTP状態を読み書きしない。
+`AnchorRanging`終了は高優先度タスクがRYUW122結果を取り込んだ同じ更新cycleで`AnchorIdle`へ遷移し、最新snapshotを上書き通知する。
+低優先度画面タスクは描画完了後に最新snapshotを取得して再描画するため、`RANGE`を実際の測距状態より必要以上に保持しない。
+実測距の300ms timeoutは変更しない。
+`main.cpp`は表示クラスとtask controllerのcompositionだけを行い、時刻計算、結果保持、通常運転中の描画を行わない。
+M5StickS3の135×240 pixel画面では、状態をY=23、現在時刻をY=35、最大8 ANCHOR結果をY=47から131、NodeStatus headerをY=143、3件をY=155、167、179へ配置する。
+ANCHOR結果行は通常文字倍率とし、最大ANCHOR ID、`TIMEOUT`、最大距離単位、6桁秒を既存の135 pixel幅へ収める。
 RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗は通常表示より優先して保持表示する。
-master session変更時は旧measurementと旧summaryの表示保持を破棄する。
+master session変更時はANCHOR別measurement一覧と表示品質を破棄する。
 
 ### 19.4 late node同期
 
 masterは初回対象が0件の場合も同期完了として待機でき、その後に有効なNodeStatusを受信すると未追跡ノードをID昇順で同期対象へ追加する。
-既存ノードへ同じsession内で周期的な再同期は行わない。
+正常同期完了から30秒後は現在有効なNodeStatusから対象一覧を再構築し、全非masterノードを同じsession内で周期的に再同期する。
+再構築時に消失したノードは同期対象と公開同期情報から除外し、同じIDとMACの有効ノードは進行中round向けの採用済み同期情報を再同期完了まで保持する。
+再同期を開始すると同期完了gateをfalseにし、全対象の正常同期後にtrueへ戻す。
 master変更時は全同期状態を破棄し、新sessionで全対象を3サンプルから同期し直す。
 
 ### 19.5 実装済み、未実装、保留
 
-最小TAG選出、NTP四時刻同期、全非masterへのcommit、3 ANCHOR×2 TAGを含む逐次測距、逐次公開、round完了、基本timeout、master変更時resetは実装済みである。
+最小TAG選出、NTP四時刻同期、全非masterへのcommit、失敗対象の1秒再試行、30秒周期再同期、3 ANCHOR×2 TAGを含む逐次測距、逐次公開、round完了、基本timeout、master変更時resetは実装済みである。
 
-EKF、座標計算、アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧、同期期限による`SynchronizationExpired`への自動遷移、周期的再同期は未実装である。
+EKF、座標計算、アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧、同期期限による`SynchronizationExpired`への自動遷移は未実装である。
 複数実機での無線順序、packet loss、queue飽和、時計ドリフト、画面視認性、NT-Shell同時操作、Wi-Fi省電力ON/OFFの時刻品質差は実機検証へ保留する。
 
 ## 20. コーディング規約
@@ -1204,6 +1247,11 @@ EKF、座標計算、アプリケーションACK、複雑な再送、輻輳制�
 - フォロワーTAGへの逐次転送
 - 最大パケットサイズが250バイト以内
 - Wi-Fi省電力設定の既定値がOFF
+- 取得済み表示snapshotが後続の測距model更新から独立して描画できること
+- ANCHORの`AnchorRanging`と`AnchorIdle`を異なるsnapshotとして描画できること
+- taskのpriority、core、更新順、snapshot上書きと最新snapshot描画
+- queue・各task作成失敗時のrollbackと永続診断
+- 停止時に画面task、測距task、snapshot queueの順で解放すること
 
 ### 21.2 ビルド検証
 
@@ -1215,6 +1263,8 @@ M5StickS3環境でclean buildを行う。
 - `TagMasterCoordinator.cpp`
 - `NtpTimeSynchronizer.cpp`
 - `SequentialRangingController.cpp`
+- `SequentialRangingDisplay.cpp`
+- `RangingDisplayTaskController.cpp`
 - `Ryuw122Controller.cpp`
 - `ConfigPreference.cpp`
 - `ConfigRuntime.cpp`

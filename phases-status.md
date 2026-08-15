@@ -4,8 +4,8 @@
 
 ## 全体状況
 
-- 総フェーズ数: 8
-- 完了フェーズ数: 8
+- 総フェーズ数: 10
+- 完了フェーズ数: 10
 - 現在フェーズ: なし
 - 次フェーズ: なし
 - 実装開始条件: ユーザーによる設計・タスク分解の確認
@@ -25,6 +25,9 @@
 | P6 | 最終確認 | T-010 | 完了 | sol highレビューの必須修正がなく、最終検証が成功する |
 | P7 | RYUW122 UART復旧 | T-011 | 完了 | GPIO8のNRST制御で起動時UARTウェッジを復旧できる |
 | P8 | 計測開始フロー文書化 | T-012 | 完了 | マスター更新を含む起動から初回測距開始までのシーケンスと実装範囲が明確である |
+| P9 | 画面表示改善 | T-013 | 完了 | 接続先3件、TAGごとの全ANCHOR距離、計測時刻、現在統一時刻をmain外の表示クラスで確認できる |
+| P10 | NTP実機復旧 | T-014 | 完了 | 同一時計基準、後参加、失敗再試行、30秒周期再同期を実機向け経路で確認できる |
+| P11 | リアルタイム実行分離 | T-015 | 完了 | 測距を高優先度、画面描画を低優先度の独立タスクで動作させる |
 
 ## フェーズ詳細
 
@@ -139,3 +142,79 @@
 - マスター選出、マスター更新、NTP再同期、初回`RangeControl`、最初のUWB測距開始が一続きで確認できる。
 - マスター更新時に全非マスターノードがもう一度同期することが明記されている。
 - 設計書と機能一覧が現在の実装に一致する。
+
+### P9 画面表示改善
+
+成果物:
+
+- 接続先3件のNodeStatus一覧表示
+- TAGごとの全ANCHOR最新距離、計測時刻、現在統一時刻表示
+- `SequentialRangingDisplay`のホストテストとM5StickS3 build結果
+
+終了判定:
+
+- 受信済み接続先を最大3件まで画面へ表示する。
+- マスターTAGとフォロワーTAGの双方で、自ノードに対する全ANCHORの最新距離とマスター基準計測時刻を画面へ表示する。
+- TAG画面にマスターTAG基準の現在時刻を表示する。
+- `main.cpp`は依存のcompositionと表示クラス呼び出しだけに保ち、時刻変換、一覧保持、描画を表示・同期クラスへ集約する。
+- PlatformIO native testとM5StickS3 clean/full buildが成功する。
+
+完了結果:
+
+- TAG画面は自TAG向け結果をANCHOR ID別に最大8件保持し、ID順に距離または失敗状態とマスター基準計測時刻を表示する。
+- TAG画面はマスター基準の現在時刻を表示し、未同期時は`UNSYNC`とする。
+- NodeStatus先頭3件と最大8 ANCHOR結果が135×240画面内に収まる。
+- 通常レビューfinding `T013-NR-001` Mediumは修正済みで、fix verificationは`pass_with_held`である。
+- focused testはnative_t004 16/16、native_t008 12/12、全native 84/84、M5StickS3 clean/full buildが成功した。
+
+### P10 NTP実機復旧
+
+成果物:
+
+- ESP Timerへ統一したNTP四時刻取得
+- 後参加ノードの即時同期
+- 初回失敗時の1秒再試行と30秒周期再同期
+- host testとM5StickS3 build結果
+
+終了判定:
+
+- `rx_ctrl->timestamp`をNTP四時刻計算へ使用しない。
+- 電源投入時刻が異なるノードを再起動なしで同期対象へ追加できる。
+- 全同期失敗で`ReadyToStart`へ誤遷移せず、再試行できる。
+- 正常同期後30秒で現在有効なノードと同期を更新できる。
+- 通常buildとテスト専用native環境の入口が分離されている。
+- PlatformIO native testとM5StickS3 clean/full buildが成功する。
+
+完了結果:
+
+- NTP四時刻はESP Timer時計基準へ統一された。
+- 後参加ノードの即時同期、失敗後1秒再試行、正常完了後30秒周期再同期を実装した。
+- 周期再同期では消失ノードを除外し、次round開始前に同期完了を要求する。
+- 引数なし通常buildをM5StickS3へ限定し、native環境をTest Runner専用として分離した。
+- focused native 21/21、全native 89/89、M5StickS3 clean/full buildが成功した。
+- ユーザー指示によりレビューは省略した。
+
+### P11 リアルタイム実行分離
+
+成果物:
+
+- 高優先度の通信・時刻同期・測距タスク
+- 低優先度の画面描画タスク
+- 競合しない表示snapshot境界
+- host testとM5StickS3 build結果
+
+終了判定:
+
+- 画面描画とsprite転送が測距処理をブロックしない。
+- 測距タスクの優先度が画面タスクより高い。
+- ANCHORの`RANGE`表示が実際の測距完了後に解除される。
+- 共有状態の同期とタスク停止条件が明文化される。
+- 通常レビューの必須修正findingが残っていない。
+
+完了結果:
+
+- 測距更新をcore 1・優先度4、画面描画をcore 0・優先度1の独立taskへ分離した。
+- 容量1の固定長snapshot queueで表示状態を渡し、画面描画は通信・同期・測距objectへ直接アクセスしない。
+- task開始失敗時のcleanupと永続診断、不完全なruntime mode切替の廃止を実装した。
+- production task controllerを直接実行するnative testを追加し、focused 19/19、全native 96/96、M5StickS3 clean/full buildに成功した。
+- T015-NR-001からT015-NR-004はすべてresolved、fix verificationは`pass_with_held`である。

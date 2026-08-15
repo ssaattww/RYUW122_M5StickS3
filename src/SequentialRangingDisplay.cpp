@@ -1,18 +1,23 @@
 #include "SequentialRangingDisplay.h"
 
+#include <cstdio>
+
 /**
  * @brief 逐次測距eventと描画先を注入して表示管理を生成します。
  *
  * @param controller 逐次測距eventの取得元
  * @param broadcast 受信ノード状態の取得元
+ * @param timeSynchronizer 現在のマスターTAG基準時刻の取得元
  * @param canvas 描画先Canvas
  */
 SequentialRangingDisplay::SequentialRangingDisplay(
     SequentialRangingController& controller,
     EspNowBroadcast& broadcast,
+    NtpTimeSynchronizer& timeSynchronizer,
     M5Canvas& canvas)
     : m_controller(controller),
       m_broadcast(broadcast),
+      m_timeSynchronizer(timeSynchronizer),
       m_canvas(canvas),
       m_latestResetGeneration(controller.GetResetGeneration())
 {
@@ -48,27 +53,20 @@ bool SequentialRangingDisplay::Update()
     if (resetGeneration != m_latestResetGeneration)
     {
         m_latestResetGeneration = resetGeneration;
-        m_latestMeasurement = TimedRangeMeasurement{};
-        m_latestSummary = SequentialRangeRoundSummary{};
-        m_hasMeasurement = false;
-        m_hasSummary = false;
+        ClearTagMeasurements();
         changed = true;
     }
 
     TimedRangeMeasurement measurement{};
     while (m_controller.TryTakeMeasurement(measurement))
     {
-        m_latestMeasurement = measurement;
-        m_hasMeasurement = true;
-        changed = true;
+        changed = StoreTagMeasurement(measurement) || changed;
     }
 
     SequentialRangeRoundSummary summary{};
     while (m_controller.TryTakeCompletedRound(summary))
     {
-        m_latestSummary = summary;
-        m_hasSummary = true;
-        changed = true;
+        static_cast<void>(summary);
     }
 
     NodeStatus status{};
@@ -84,15 +82,54 @@ bool SequentialRangingDisplay::Update()
         changed = true;
     }
 
+    changed = UpdateCurrentMasterTime() || changed;
+
     return changed;
 }
 
 /**
- * @brief ステータスバーを避けて逐次測距状態と受信ノードを描画します。
+ * @brief 現在の表示modelを固定長snapshotへコピーします。
  *
- * @param mode 現在の動作モード
+ * @param snapshot コピー先snapshot
  */
-void SequentialRangingDisplay::Draw(EnRunMode mode)
+void SequentialRangingDisplay::CaptureSnapshot(
+    SequentialRangingDisplaySnapshot& snapshot) const
+{
+    snapshot = SequentialRangingDisplaySnapshot{};
+    snapshot.m_state = m_latestState;
+    snapshot.m_ryuw122Result = m_ryuw122Result;
+    snapshot.m_timeQuality = m_latestTimeQuality;
+    snapshot.m_currentMasterTimeUs = m_currentMasterTimeUs;
+    snapshot.m_anchorMeasurementCount = m_anchorMeasurementCount;
+    snapshot.m_transportStarted = m_transportStarted;
+    snapshot.m_broadcastStarted = m_broadcastStarted;
+    snapshot.m_hasCurrentMasterTime = m_hasCurrentMasterTime;
+
+    const NodeStatus& localStatus = m_broadcast.GetLocalStatus();
+    snapshot.m_mode = localStatus.mode;
+    snapshot.m_nodeId = localStatus.nodeID;
+    for (size_t index = 0; index < m_anchorMeasurementCount; ++index)
+    {
+        snapshot.m_anchorMeasurements[index] = m_anchorMeasurements[index];
+    }
+    for (const auto& node : m_broadcast.GetNodes())
+    {
+        if (snapshot.m_receivedNodeCount >= m_visibleNodeCount)
+        {
+            break;
+        }
+        snapshot.m_receivedNodes[snapshot.m_receivedNodeCount] = node.second;
+        ++snapshot.m_receivedNodeCount;
+    }
+}
+
+/**
+ * @brief snapshotから逐次測距状態と受信ノードを描画します。
+ *
+ * @param snapshot 描画する固定長snapshot
+ */
+void SequentialRangingDisplay::Draw(
+    const SequentialRangingDisplaySnapshot& snapshot)
 {
     m_canvas.fillRect(
         0,
@@ -103,71 +140,186 @@ void SequentialRangingDisplay::Draw(EnRunMode mode)
     m_canvas.setTextColor(TFT_WHITE);
     m_canvas.setTextSize(1);
 
-    if (HasInitializationFailure())
+    if (HasInitializationFailure(snapshot))
     {
-        DrawInitializationFailure();
+        DrawInitializationFailure(snapshot);
         return;
     }
 
-    const EnTimeQuality quality = m_hasMeasurement
-        ? m_latestMeasurement.timeQuality
+    const EnTimeQuality quality = snapshot.m_mode == EnRunMode::Tag &&
+        snapshot.m_anchorMeasurementCount > 0U
+        ? snapshot.m_timeQuality
         : EnTimeQuality::Unsynchronized;
     m_canvas.setCursor(m_contentLeft, m_firstLineY);
     m_canvas.printf(
         "SEQ %s %s Q:%s",
-        GetRoleName(mode, m_latestState),
-        GetStateName(m_latestState),
+        GetRoleName(snapshot.m_mode, snapshot.m_state),
+        GetStateName(snapshot.m_state),
         GetTimeQualityName(quality));
 
-    if (m_hasMeasurement)
+    if (snapshot.m_mode == EnRunMode::Tag)
     {
-        m_canvas.setCursor(m_contentLeft, m_firstLineY + m_lineHeight);
-        m_canvas.printf(
-            "R%lu A%u-T%u %s",
-            static_cast<unsigned long>(m_latestMeasurement.roundId),
-            m_latestMeasurement.anchorId,
-            m_latestMeasurement.tagId,
-            GetResultName(m_latestMeasurement.status));
-
-        m_canvas.setCursor(m_contentLeft, m_firstLineY + (m_lineHeight * 2));
-        m_canvas.printf(
-            "%lumm RSSI:%d",
-            static_cast<unsigned long>(m_latestMeasurement.distanceMm),
-            static_cast<int>(m_latestMeasurement.uwbRssi));
-
-        m_canvas.setCursor(m_contentLeft, m_firstLineY + (m_lineHeight * 3));
-        m_canvas.printf(
-            "dur:%luus Q:%s",
-            static_cast<unsigned long>(m_latestMeasurement.rangingDurationUs),
-            GetTimeQualityName(m_latestMeasurement.timeQuality));
+        DrawTagResults(snapshot);
     }
 
-    if (m_hasSummary)
+    DrawReceivedNodes(snapshot);
+}
+
+/**
+ * @brief 自TAGに対するANCHOR別最新測距結果と現在のマスター時刻を描画します。
+ *
+ * @param snapshot 描画する固定長snapshot
+ */
+void SequentialRangingDisplay::DrawTagResults(
+    const SequentialRangingDisplaySnapshot& snapshot)
+{
+    m_canvas.setCursor(m_contentLeft, m_firstLineY + m_lineHeight);
+    if (snapshot.m_hasCurrentMasterTime)
     {
-        const uint8_t missingCount =
-            m_latestSummary.expectedMeasurementCount >
-                m_latestSummary.receivedMeasurementCount
-            ? static_cast<uint8_t>(
-                m_latestSummary.expectedMeasurementCount -
-                m_latestSummary.receivedMeasurementCount)
-            : 0U;
-
-        m_canvas.setCursor(m_contentLeft, m_firstLineY + (m_lineHeight * 4));
         m_canvas.printf(
-            "SUM R%lu %u/%u %s",
-            static_cast<unsigned long>(m_latestSummary.roundId),
-            m_latestSummary.receivedMeasurementCount,
-            m_latestSummary.expectedMeasurementCount,
-            m_latestSummary.timedOut ? "TIMEOUT" : "DONE");
-
-        m_canvas.setCursor(m_contentLeft, m_firstLineY + (m_lineHeight * 5));
-        m_canvas.printf(
-            "dur:%luus MISS:%u",
-            static_cast<unsigned long>(m_latestSummary.totalDurationUs),
-            missingCount);
+            "NOW %06llus",
+            static_cast<unsigned long long>(
+                (snapshot.m_currentMasterTimeUs / 1000000U) %
+                m_masterTimeModuloSeconds));
+    }
+    else
+    {
+        m_canvas.print("NOW UNSYNC");
     }
 
-    DrawReceivedNodes();
+    m_canvas.setTextSize(m_tagResultTextScaleX, 1.0F);
+    for (size_t index = 0;
+         index < snapshot.m_anchorMeasurementCount;
+         ++index)
+    {
+        const TimedRangeMeasurement& measurement =
+            snapshot.m_anchorMeasurements[index];
+        const int lineY = m_firstLineY +
+            (m_lineHeight *
+             (m_tagResultFirstLineIndex + static_cast<int>(index)));
+        m_canvas.setCursor(m_contentLeft, lineY);
+        char resultText[12]{};
+        if (measurement.status == EnRangeResultStatus::Success)
+        {
+            FormatDistance(
+                measurement.distanceMm,
+                resultText,
+                sizeof(resultText));
+        }
+        else
+        {
+            snprintf(
+                resultText,
+                sizeof(resultText),
+                "%s",
+                GetResultName(measurement.status));
+        }
+        if (HasValidMeasurementMasterTime(measurement))
+        {
+            const unsigned long long measuredSecond =
+                static_cast<unsigned long long>(
+                    (measurement.rangingCompletedMasterTimeUs / 1000000U) %
+                    m_masterTimeModuloSeconds);
+            m_canvas.printf(
+                "A%u %s@%06llus",
+                measurement.anchorId,
+                resultText,
+                measuredSecond);
+        }
+        else
+        {
+            m_canvas.printf(
+                "A%u %s@UNSYNC",
+                measurement.anchorId,
+                resultText);
+        }
+    }
+}
+
+/**
+ * @brief 自TAG向け測距結果をANCHOR ID昇順の固定長一覧へ保存します。
+ *
+ * @param measurement 保存候補の測距結果
+ * @return 一覧を更新した場合はtrue、それ以外はfalse
+ */
+bool SequentialRangingDisplay::StoreTagMeasurement(
+    const TimedRangeMeasurement& measurement)
+{
+    const NodeStatus& localStatus = m_broadcast.GetLocalStatus();
+    if (localStatus.mode != EnRunMode::Tag ||
+        measurement.tagId != localStatus.nodeID)
+    {
+        return false;
+    }
+
+    size_t insertionIndex = 0;
+    while (insertionIndex < m_anchorMeasurementCount &&
+        m_anchorMeasurements[insertionIndex].anchorId < measurement.anchorId)
+    {
+        ++insertionIndex;
+    }
+    if (insertionIndex < m_anchorMeasurementCount &&
+        m_anchorMeasurements[insertionIndex].anchorId == measurement.anchorId)
+    {
+        m_anchorMeasurements[insertionIndex] = measurement;
+        m_latestTimeQuality = measurement.timeQuality;
+        return true;
+    }
+    if (m_anchorMeasurementCount >= m_maxAnchorResultCount)
+    {
+        return false;
+    }
+
+    for (size_t index = m_anchorMeasurementCount;
+         index > insertionIndex;
+         --index)
+    {
+        m_anchorMeasurements[index] = m_anchorMeasurements[index - 1U];
+    }
+    m_anchorMeasurements[insertionIndex] = measurement;
+    ++m_anchorMeasurementCount;
+    m_latestTimeQuality = measurement.timeQuality;
+    return true;
+}
+
+/**
+ * @brief 保持中のANCHOR別測距結果と表示品質を破棄します。
+ */
+void SequentialRangingDisplay::ClearTagMeasurements()
+{
+    for (TimedRangeMeasurement& measurement : m_anchorMeasurements)
+    {
+        measurement = TimedRangeMeasurement{};
+    }
+    m_anchorMeasurementCount = 0;
+    m_latestTimeQuality = EnTimeQuality::Unsynchronized;
+}
+
+/**
+ * @brief 現在のマスターTAG基準秒を表示状態へ反映します。
+ *
+ * @return 表示する秒または有効状態が変化した場合はtrue、それ以外はfalse
+ */
+bool SequentialRangingDisplay::UpdateCurrentMasterTime()
+{
+    uint64_t currentMasterTimeUs = 0;
+    const bool hasCurrentMasterTime =
+        m_broadcast.GetLocalStatus().mode == EnRunMode::Tag &&
+        m_timeSynchronizer.TryGetCurrentMasterTime(currentMasterTimeUs);
+    if (!hasCurrentMasterTime)
+    {
+        const bool changed = m_hasCurrentMasterTime;
+        m_hasCurrentMasterTime = false;
+        m_currentMasterTimeUs = 0;
+        return changed;
+    }
+
+    const bool changed = !m_hasCurrentMasterTime ||
+        currentMasterTimeUs / 1000000U !=
+            m_currentMasterTimeUs / 1000000U;
+    m_hasCurrentMasterTime = true;
+    m_currentMasterTimeUs = currentMasterTimeUs;
+    return changed;
 }
 
 /**
@@ -275,42 +427,106 @@ const char* SequentialRangingDisplay::GetTimeQualityName(EnTimeQuality quality)
 }
 
 /**
- * @brief 初期化失敗が保持されているか確認します。
+ * @brief 距離を画面幅へ収まる単位へ変換します。
  *
- * @return RYUW122またはESP-NOWの初期化に失敗した場合はtrue
+ * @param distanceMm ミリメートル単位の距離
+ * @param text 変換後文字列の格納先
+ * @param textSize 格納先のバイト数
  */
-bool SequentialRangingDisplay::HasInitializationFailure() const
+void SequentialRangingDisplay::FormatDistance(
+    uint32_t distanceMm,
+    char* text,
+    size_t textSize)
 {
-    return m_ryuw122Result != EnRyuw122InitResult::Ok ||
-        !m_transportStarted ||
-        !m_broadcastStarted;
+    if (distanceMm < 100000U)
+    {
+        snprintf(
+            text,
+            textSize,
+            "%lumm",
+            static_cast<unsigned long>(distanceMm));
+        return;
+    }
+    if (distanceMm < 100000000U)
+    {
+        snprintf(
+            text,
+            textSize,
+            "%lum",
+            static_cast<unsigned long>(distanceMm / 1000U));
+        return;
+    }
+    snprintf(
+        text,
+        textSize,
+        "%lukm",
+        static_cast<unsigned long>(distanceMm / 1000000U));
 }
 
 /**
- * @brief 通常表示より優先して保持中の初期化失敗を描画します。
+ * @brief 測距結果が有効なマスターTAG基準計測時刻を持つか確認します。
+ *
+ * @param measurement 確認する測距結果
+ * @return 時刻変換済みの品質である場合はtrue、それ以外はfalse
  */
-void SequentialRangingDisplay::DrawInitializationFailure()
+bool SequentialRangingDisplay::HasValidMeasurementMasterTime(
+    const TimedRangeMeasurement& measurement)
+{
+    switch (measurement.timeQuality)
+    {
+        case EnTimeQuality::Synchronized:
+        case EnTimeQuality::PowerSaveEnabled:
+        case EnTimeQuality::ReceiveTimestampUnavailable:
+            return true;
+        case EnTimeQuality::SynchronizationExpired:
+        case EnTimeQuality::Unsynchronized:
+        default:
+            return false;
+    }
+}
+
+/**
+ * @brief snapshotに初期化失敗が保持されているか確認します。
+ *
+ * @param snapshot 確認する固定長snapshot
+ * @return RYUW122またはESP-NOWの初期化に失敗した場合はtrue
+ */
+bool SequentialRangingDisplay::HasInitializationFailure(
+    const SequentialRangingDisplaySnapshot& snapshot)
+{
+    return snapshot.m_ryuw122Result != EnRyuw122InitResult::Ok ||
+        !snapshot.m_transportStarted ||
+        !snapshot.m_broadcastStarted;
+}
+
+/**
+ * @brief 通常表示より優先してsnapshotの初期化失敗を描画します。
+ *
+ * @param snapshot 描画する固定長snapshot
+ */
+void SequentialRangingDisplay::DrawInitializationFailure(
+    const SequentialRangingDisplaySnapshot& snapshot)
 {
     int lineY = m_firstLineY;
     m_canvas.setTextColor(TFT_RED);
     m_canvas.setCursor(m_contentLeft, lineY);
     m_canvas.print("INIT FAILED");
 
-    if (m_ryuw122Result != EnRyuw122InitResult::Ok)
+    if (snapshot.m_ryuw122Result != EnRyuw122InitResult::Ok)
     {
         lineY += m_lineHeight;
         m_canvas.setCursor(m_contentLeft, lineY);
         m_canvas.printf(
             "RYUW122: %s",
-            Ryuw122Controller::GetResultName(m_ryuw122Result));
+            Ryuw122Controller::GetResultName(snapshot.m_ryuw122Result));
     }
-    if (!m_transportStarted)
+    if (!snapshot.m_transportStarted)
     {
         lineY += m_lineHeight;
         m_canvas.setCursor(m_contentLeft, lineY);
         m_canvas.print("ESP-NOW transport failed");
     }
-    else if (!m_broadcastStarted)
+    else if (!snapshot.m_broadcastStarted)
     {
         lineY += m_lineHeight;
         m_canvas.setCursor(m_contentLeft, lineY);
@@ -319,11 +535,16 @@ void SequentialRangingDisplay::DrawInitializationFailure()
 }
 
 /**
- * @brief 受信ノード一覧のヘッダーと先頭2件を描画します。
+ * @brief snapshotの受信ノード一覧のヘッダーと先頭3件を描画します。
+ *
+ * @param snapshot 描画する固定長snapshot
  */
-void SequentialRangingDisplay::DrawReceivedNodes()
+void SequentialRangingDisplay::DrawReceivedNodes(
+    const SequentialRangingDisplaySnapshot& snapshot)
 {
-    const int headerY = m_firstLineY + (m_lineHeight * 6);
+    m_canvas.setTextSize(1);
+    const int headerY = m_firstLineY +
+        (m_lineHeight * m_receivedNodeHeaderLineIndex);
     if (headerY >= m_canvas.height())
     {
         return;
@@ -333,15 +554,11 @@ void SequentialRangingDisplay::DrawReceivedNodes()
     m_canvas.print("ID MODE X,Y");
 
     int lineY = headerY + m_lineHeight;
-    size_t displayedCount = 0;
-    for (const auto& node : m_broadcast.GetNodes())
+    for (size_t index = 0;
+         index < snapshot.m_receivedNodeCount && lineY < m_canvas.height();
+         ++index)
     {
-        if (displayedCount >= m_visibleNodeCount || lineY >= m_canvas.height())
-        {
-            break;
-        }
-
-        const NodeStatus& status = node.second;
+        const NodeStatus& status = snapshot.m_receivedNodes[index];
         const char mode = status.mode == EnRunMode::Tag ? 'T' : 'A';
         m_canvas.setCursor(m_contentLeft, lineY);
         m_canvas.printf(
@@ -351,6 +568,5 @@ void SequentialRangingDisplay::DrawReceivedNodes()
             status.anchorPositionX,
             status.anchorPositionY);
         lineY += m_lineHeight;
-        ++displayedCount;
     }
 }
