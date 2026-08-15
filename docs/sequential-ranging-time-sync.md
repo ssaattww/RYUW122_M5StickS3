@@ -860,7 +860,71 @@ UWBタイムアウト後に到着した古い応答を次ラウンドへ誤帰�
 
 ## 14. シーケンス図
 
-### 14.1 複数TAGの正常系
+### 14.1 起動から初回測距開始
+
+次の図はT1が最小IDのTAG、T2がフォロワーTAG、A1とA2がANCHORの場合を示す。
+各ノードはNodeStatusからマスター識別情報を更新し、全非マスターノードが新しいマスターTAGとの同期を完了するまで測距を開始しない。
+
+```mermaid
+sequenceDiagram
+    participant T1 as T1 最小ID TAG
+    participant T2 as T2 TAG
+    participant A1 as A1 ANCHOR
+    participant A2 as A2 ANCHOR
+
+    par 各ノードの起動
+        T1->>T1: NVS読込、ESP-NOW・RYUW122初期化
+    and
+        T2->>T2: NVS読込、ESP-NOW・RYUW122初期化
+    and
+        A1->>A1: NVS読込、ESP-NOW・RYUW122初期化
+    and
+        A2->>A2: NVS読込、ESP-NOW・RYUW122初期化
+    end
+
+    par NodeStatusを即時送信
+        T1-->>T2: NodeStatus TAG ID=1
+        T1-->>A1: NodeStatus TAG ID=1
+        T1-->>A2: NodeStatus TAG ID=1
+    and
+        T2-->>T1: NodeStatus TAG ID=2
+        T2-->>A1: NodeStatus TAG ID=2
+        T2-->>A2: NodeStatus TAG ID=2
+    and
+        A1-->>T1: NodeStatus ANCHOR ID=10
+    and
+        A2-->>T1: NodeStatus ANCHOR ID=11
+    end
+
+    Note over T1,A2: 初回500msの選出待ち後、各TagMasterCoordinatorを更新
+    Note over T1,A2: 有効な最小TAG ID=1をマスターT1として一致させる
+    T1->>T1: 非0のsession S1を生成
+    T1-->>T2: NodeStatus master=T1, session=S1
+    T1-->>A1: NodeStatus master=T1, session=S1
+    T1-->>A2: NodeStatus master=T1, session=S1
+    Note over T1,A2: マスター識別情報をT1/S1へ更新し、旧同期・旧roundを破棄
+
+    T1->>T2: NtpSyncRequestを3回
+    T2-->>T1: NtpSyncResponseを3回
+    T1-->>T2: NtpSyncCommit
+    T1->>A1: NtpSyncRequestを3回
+    A1-->>T1: NtpSyncResponseを3回
+    T1-->>A1: NtpSyncCommit
+    T1->>A2: NtpSyncRequestを3回
+    A2-->>T1: NtpSyncResponseを3回
+    T1-->>A2: NtpSyncCommit
+
+    Note over T1,A2: 全非マスターノードの同期完了を確認
+    T1->>T1: 同期済みANCHOR・TAGをID昇順でsnapshot
+    T1->>A1: RangeControl round 1, A1-T1
+    Note over A1: master/session、送信元、同期状態を検証
+    A1->>T1: RYUW122でA1-T1のUWB測距開始
+```
+
+マスターID、マスターMAC、またはsession IDが更新された場合は、測距開始前でも測距中でも以前の同期情報とラウンドを破棄する。
+全ANCHORと全フォロワーTAGが新しいマスターTAGとNTP四時刻同期をもう一度完了してから、新しいsessionの`RangeControl`を送信する。
+
+### 14.2 複数TAGの正常系
 
 次の図はT1が最小IDのマスターTAG、T2がフォロワーTAG、A1とA2がANCHORの場合を示す。
 各測距結果は1件ずつマスターTAGへ届き、全組み合わせの完了を待たずに公開される。
@@ -902,7 +966,7 @@ sequenceDiagram
 図中の並行区間は、ESP-NOWの逐次結果通知を待たずに別無線であるRYUW122の次測距を開始する意図を示す。
 実装は単一スレッドの`Update()`状態機械でもよく、ブロッキング待機を置かず双方を進行させる。
 
-### 14.2 NTP四時刻同期
+### 14.3 NTP四時刻同期
 
 マスターTAGは各ANCHORと各フォロワーTAGへ同じ手順を実行する。
 
@@ -923,7 +987,7 @@ sequenceDiagram
     M-->>N: NtpSyncCommit offset,RTT,quality
 ```
 
-### 14.3 マスターTAG交代
+### 14.4 マスターTAG交代と再同期
 
 ```mermaid
 sequenceDiagram
@@ -936,13 +1000,17 @@ sequenceDiagram
     Note over T2,A: 有効期限30秒後にT1を除外
     Note over T2: 残存TAGの最小IDとして選出
     T2-->>A: 新マスターセッション通知
-    Note over T2,A: 旧同期・旧ラウンドを破棄
-    T2->>A: NTP四時刻同期を各ノードへ3回
-    A-->>T2: 同期応答
+    Note over T2,A: マスター識別情報を更新し、旧同期・旧ラウンドを破棄
+    Note over T1: 期限切れノードのため同期対象から除外
+    T2->>A: NTP四時刻同期を各ANCHORへ3回やり直す
+    A-->>T2: 同期応答とcommit確認
+    Note over T2,A: 全非マスターノードの再同期完了
     T2->>A: 新セッションのRangeControl
 ```
 
-より小さいIDのTAGが後から参加した場合も同じ交代処理を行うが、30秒の消失待ちは行わず、NodeStatus受信後に旧マスターが新規ラウンド開始を停止する。
+より小さいIDのTAGが後から参加した場合も同じ交代と再同期を行うが、30秒の消失待ちは行わず、NodeStatus受信後に旧マスターが新規ラウンド開始を停止する。
+この場合は動作中の旧マスターもフォロワーTAGとして同期対象へ含め、新マスターともう一度NTP四時刻同期する。
+新マスターとの再同期が完了するまで、どのノードも旧sessionまたは新sessionの測距を開始しない。
 
 ## 15. 重複と古いデータ
 

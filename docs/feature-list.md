@@ -33,7 +33,7 @@ ESP-NOWはWi-Fi Stationモードで動作し、受信callbackでは固定長情�
 
 masterは各ANCHORとfollower TAGへNTP四時刻交換を3回行い、往復遅延が最小の有効サンプルを採用する。
 採用結果は`NtpSyncCommit`で全非masterノードへ送り、各ノードがmaster基準時刻へ変換できる状態になってから測距を開始する。
-master変更時は旧同期、旧round、重複判定、送信待ち、表示保持を破棄して再同期する。
+master変更時は旧同期、旧round、重複判定、送信待ち、表示保持を破棄し、全ANCHORと全follower TAGが新しいmasterともう一度同期してから測距を再開する。
 
 測距順はANCHOR IDを外側、TAG IDを内側とする。
 3 ANCHOR×2 TAGでは次の順で繰り返す。
@@ -46,6 +46,9 @@ A1-T1 -> A1-T2 -> A2-T1 -> A2-T2 -> A3-T1 -> A3-T2
 1件ごとにmasterへ送り、masterは直ちにアプリケーションへ公開し、follower対象の結果はそのTAGへ転送する。
 最終結果の受信直後に次roundを開始する。
 UWB待ちは300ms、NTP応答待ちは100msで、round timeoutはノード数から計算する。
+
+現在実装済みなのは、各ANCHORが各TAGを測距し、結果を1件ずつmaster TAGへ集約・公開し、対象がfollower TAGの場合はそのTAGへ転送するところまでである。
+master TAGはroundの受信済み組み合わせと欠損を管理するが、測距結果の永続履歴や座標計算、EKFはまだ保持・実行しない。
 
 RYUW122はG7をUART TX、G1をUART RXとして115200bpsで使用する。
 NRSTはGPIO8へ接続する。起動時はUART初期化後にNRSTをLOWで200ms保持し、GPIO8を入力へ戻してハイインピーダンス開放した後、1秒を超えて待機してからAT通信を開始する。
@@ -117,8 +120,8 @@ NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映�
 PlatformIO native環境はT-003からT-009を分離しており、T-009はproductionの選出、NTP、protocol codec、逐次測距controllerを1つのtest binaryへ直接結合する。
 3 ANCHOR×2 TAGの順序、逐次公開、時刻変換、round完了、基本timeout、master変更reset、再同期をhost上で検証する。
 M5StickS3は`m5stack-sticks3`環境でclean/full buildする。
-T-009実装時点でnative testは60件すべて成功し、M5StickS3 clean/full buildも成功している。
-full buildの使用量はRAM 68,112 / 327,680バイト、Flash 1,232,811 / 3,342,336バイトである。
+T-011実装時点でnative testは76件すべて成功し、M5StickS3 clean/full buildも成功している。
+full buildの使用量はRAM 68,144 / 327,680バイト、Flash 1,233,591 / 3,342,336バイトである。
 
 EKFと座標計算は未実装であり、逐次結果を将来の非同期観測入力として利用する前提である。
 アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧、周期的再同期も未実装である。
