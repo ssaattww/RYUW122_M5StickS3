@@ -1,5 +1,6 @@
 #include <M5Unified.h>
 
+#include "BuildOptions.h"
 #include "NtShell.h"
 
 #include "PreferenceCommands.h"
@@ -19,7 +20,9 @@
 
 namespace
 {
+#if NT_SHELL_ENABLED
     NtShell ntShell(Serial);
+#endif
     NvsPreferenceStore preferenceStore("ryuw122", "ryuw122_meta");
     PreferenceCommands preferenceCommands(preferenceStore);
     ConfigPreference configPreference(preferenceStore);
@@ -58,7 +61,8 @@ namespace
         ryuw122Controller,
         sequentialRangingController,
         sequentialRangingDisplay,
-        canvas);
+        canvas,
+        Serial);
 
 };
 
@@ -100,8 +104,10 @@ void setup()
         transportStarted,
         broadcastStarted);
 
+#if NT_SHELL_ENABLED
     ntShell.RegisterCommands(preferenceCommands.GetCommands());
     ntShell.Start();
+#endif
     if (!rangingDisplayTaskController.Begin())
     {
         rangingDisplayTaskController.ShowTaskStartFailure();

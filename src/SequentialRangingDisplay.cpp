@@ -100,7 +100,8 @@ void SequentialRangingDisplay::CaptureSnapshot(
     snapshot.m_ryuw122Result = m_ryuw122Result;
     snapshot.m_timeQuality = m_latestTimeQuality;
     snapshot.m_currentMasterTimeUs = m_currentMasterTimeUs;
-    snapshot.m_anchorMeasurementCount = m_anchorMeasurementCount;
+    snapshot.m_successMeasurementCount = m_successMeasurementCount;
+    snapshot.m_failureMeasurementCount = m_failureMeasurementCount;
     snapshot.m_transportStarted = m_transportStarted;
     snapshot.m_broadcastStarted = m_broadcastStarted;
     snapshot.m_hasCurrentMasterTime = m_hasCurrentMasterTime;
@@ -108,9 +109,13 @@ void SequentialRangingDisplay::CaptureSnapshot(
     const NodeStatus& localStatus = m_broadcast.GetLocalStatus();
     snapshot.m_mode = localStatus.mode;
     snapshot.m_nodeId = localStatus.nodeID;
-    for (size_t index = 0; index < m_anchorMeasurementCount; ++index)
+    for (size_t index = 0; index < m_successMeasurementCount; ++index)
     {
-        snapshot.m_anchorMeasurements[index] = m_anchorMeasurements[index];
+        snapshot.m_successMeasurements[index] = m_successMeasurements[index];
+    }
+    for (size_t index = 0; index < m_failureMeasurementCount; ++index)
+    {
+        snapshot.m_failureMeasurements[index] = m_failureMeasurements[index];
     }
     for (const auto& node : m_broadcast.GetNodes())
     {
@@ -147,7 +152,7 @@ void SequentialRangingDisplay::Draw(
     }
 
     const EnTimeQuality quality = snapshot.m_mode == EnRunMode::Tag &&
-        snapshot.m_anchorMeasurementCount > 0U
+        snapshot.m_successMeasurementCount > 0U
         ? snapshot.m_timeQuality
         : EnTimeQuality::Unsynchronized;
     m_canvas.setCursor(m_contentLeft, m_firstLineY);
@@ -157,10 +162,7 @@ void SequentialRangingDisplay::Draw(
         GetStateName(snapshot.m_state),
         GetTimeQualityName(quality));
 
-    if (snapshot.m_mode == EnRunMode::Tag)
-    {
-        DrawTagResults(snapshot);
-    }
+    DrawTagResults(snapshot);
 
     DrawReceivedNodes(snapshot);
 }
@@ -187,52 +189,44 @@ void SequentialRangingDisplay::DrawTagResults(
         m_canvas.print("NOW UNSYNC");
     }
 
-    m_canvas.setTextSize(m_tagResultTextScaleX, 1.0F);
+    m_canvas.setCursor(
+        m_contentLeft,
+        m_firstLineY + m_lineHeight * m_successHeaderLineIndex);
+    m_canvas.print("OK LAST");
     for (size_t index = 0;
-         index < snapshot.m_anchorMeasurementCount;
+         index < snapshot.m_successMeasurementCount;
          ++index)
     {
         const TimedRangeMeasurement& measurement =
-            snapshot.m_anchorMeasurements[index];
+            snapshot.m_successMeasurements[index];
         const int lineY = m_firstLineY +
             (m_lineHeight *
-             (m_tagResultFirstLineIndex + static_cast<int>(index)));
+             (m_successFirstLineIndex + static_cast<int>(index)));
         m_canvas.setCursor(m_contentLeft, lineY);
         char resultText[12]{};
-        if (measurement.status == EnRangeResultStatus::Success)
-        {
-            FormatDistance(
-                measurement.distanceMm,
-                resultText,
-                sizeof(resultText));
-        }
-        else
-        {
-            snprintf(
-                resultText,
-                sizeof(resultText),
-                "%s",
-                GetResultName(measurement.status));
-        }
-        if (HasValidMeasurementMasterTime(measurement))
-        {
-            const unsigned long long measuredSecond =
-                static_cast<unsigned long long>(
-                    (measurement.rangingCompletedMasterTimeUs / 1000000U) %
-                    m_masterTimeModuloSeconds);
-            m_canvas.printf(
-                "A%u %s@%06llus",
-                measurement.anchorId,
-                resultText,
-                measuredSecond);
-        }
-        else
-        {
-            m_canvas.printf(
-                "A%u %s@UNSYNC",
-                measurement.anchorId,
-                resultText);
-        }
+        FormatDistance(measurement.distanceMm, resultText, sizeof(resultText));
+        m_canvas.printf("A%u %s", measurement.anchorId, resultText);
+    }
+
+    m_canvas.setCursor(
+        m_contentLeft,
+        m_firstLineY + m_lineHeight * m_failureHeaderLineIndex);
+    m_canvas.print("CURRENT FAIL");
+    for (size_t index = 0;
+         index < snapshot.m_failureMeasurementCount;
+         ++index)
+    {
+        const TimedRangeMeasurement& measurement =
+            snapshot.m_failureMeasurements[index];
+        const int lineY = m_firstLineY +
+            m_lineHeight *
+                (m_failureFirstLineIndex + static_cast<int>(index));
+        m_canvas.setCursor(m_contentLeft, lineY);
+        m_canvas.printf(
+            "A%u %s %lums",
+            measurement.anchorId,
+            GetFailureName(measurement.status),
+            static_cast<unsigned long>(measurement.rangingDurationUs / 1000U));
     }
 }
 
@@ -252,33 +246,103 @@ bool SequentialRangingDisplay::StoreTagMeasurement(
         return false;
     }
 
+    if (measurement.status == EnRangeResultStatus::Success)
+    {
+        const bool stored = StoreSuccessMeasurement(measurement);
+        return RemoveFailureMeasurement(measurement.anchorId) || stored;
+    }
+    return StoreFailureMeasurement(measurement);
+}
+
+bool SequentialRangingDisplay::StoreSuccessMeasurement(
+    const TimedRangeMeasurement& measurement)
+{
     size_t insertionIndex = 0;
-    while (insertionIndex < m_anchorMeasurementCount &&
-        m_anchorMeasurements[insertionIndex].anchorId < measurement.anchorId)
+    while (insertionIndex < m_successMeasurementCount &&
+        m_successMeasurements[insertionIndex].anchorId < measurement.anchorId)
     {
         ++insertionIndex;
     }
-    if (insertionIndex < m_anchorMeasurementCount &&
-        m_anchorMeasurements[insertionIndex].anchorId == measurement.anchorId)
+    if (insertionIndex < m_successMeasurementCount &&
+        m_successMeasurements[insertionIndex].anchorId == measurement.anchorId)
     {
-        m_anchorMeasurements[insertionIndex] = measurement;
+        m_successMeasurements[insertionIndex] = measurement;
         m_latestTimeQuality = measurement.timeQuality;
         return true;
     }
-    if (m_anchorMeasurementCount >= m_maxAnchorResultCount)
+    if (m_successMeasurementCount >= m_maxAnchorResultCount &&
+        insertionIndex >= m_maxAnchorResultCount)
     {
         return false;
     }
-
-    for (size_t index = m_anchorMeasurementCount;
+    const size_t nextCount = m_successMeasurementCount < m_maxAnchorResultCount
+        ? m_successMeasurementCount + 1U
+        : m_successMeasurementCount;
+    for (size_t index = nextCount - 1U;
          index > insertionIndex;
          --index)
     {
-        m_anchorMeasurements[index] = m_anchorMeasurements[index - 1U];
+        m_successMeasurements[index] = m_successMeasurements[index - 1U];
     }
-    m_anchorMeasurements[insertionIndex] = measurement;
-    ++m_anchorMeasurementCount;
+    m_successMeasurements[insertionIndex] = measurement;
+    m_successMeasurementCount = nextCount;
     m_latestTimeQuality = measurement.timeQuality;
+    return true;
+}
+
+bool SequentialRangingDisplay::StoreFailureMeasurement(
+    const TimedRangeMeasurement& measurement)
+{
+    size_t insertionIndex = 0;
+    while (insertionIndex < m_failureMeasurementCount &&
+        m_failureMeasurements[insertionIndex].anchorId < measurement.anchorId)
+    {
+        ++insertionIndex;
+    }
+    if (insertionIndex < m_failureMeasurementCount &&
+        m_failureMeasurements[insertionIndex].anchorId == measurement.anchorId)
+    {
+        m_failureMeasurements[insertionIndex] = measurement;
+        return true;
+    }
+    if (m_failureMeasurementCount >= m_maxAnchorResultCount &&
+        insertionIndex >= m_maxAnchorResultCount)
+    {
+        return false;
+    }
+    const size_t nextCount = m_failureMeasurementCount < m_maxAnchorResultCount
+        ? m_failureMeasurementCount + 1U
+        : m_failureMeasurementCount;
+    for (size_t index = nextCount - 1U;
+         index > insertionIndex;
+         --index)
+    {
+        m_failureMeasurements[index] = m_failureMeasurements[index - 1U];
+    }
+    m_failureMeasurements[insertionIndex] = measurement;
+    m_failureMeasurementCount = nextCount;
+    return true;
+}
+
+bool SequentialRangingDisplay::RemoveFailureMeasurement(uint8_t anchorId)
+{
+    size_t index = 0;
+    while (index < m_failureMeasurementCount &&
+        m_failureMeasurements[index].anchorId != anchorId)
+    {
+        ++index;
+    }
+    if (index >= m_failureMeasurementCount)
+    {
+        return false;
+    }
+    while (index + 1U < m_failureMeasurementCount)
+    {
+        m_failureMeasurements[index] = m_failureMeasurements[index + 1U];
+        ++index;
+    }
+    --m_failureMeasurementCount;
+    m_failureMeasurements[m_failureMeasurementCount] = TimedRangeMeasurement{};
     return true;
 }
 
@@ -287,11 +351,16 @@ bool SequentialRangingDisplay::StoreTagMeasurement(
  */
 void SequentialRangingDisplay::ClearTagMeasurements()
 {
-    for (TimedRangeMeasurement& measurement : m_anchorMeasurements)
+    for (TimedRangeMeasurement& measurement : m_successMeasurements)
     {
         measurement = TimedRangeMeasurement{};
     }
-    m_anchorMeasurementCount = 0;
+    for (TimedRangeMeasurement& measurement : m_failureMeasurements)
+    {
+        measurement = TimedRangeMeasurement{};
+    }
+    m_successMeasurementCount = 0;
+    m_failureMeasurementCount = 0;
     m_latestTimeQuality = EnTimeQuality::Unsynchronized;
 }
 
@@ -384,7 +453,7 @@ const char* SequentialRangingDisplay::GetRoleName(
  * @param status 測距結果状態
  * @return 画面へ表示する結果名
  */
-const char* SequentialRangingDisplay::GetResultName(EnRangeResultStatus status)
+const char* SequentialRangingDisplay::GetFailureName(EnRangeResultStatus status)
 {
     switch (status)
     {
@@ -393,9 +462,9 @@ const char* SequentialRangingDisplay::GetResultName(EnRangeResultStatus status)
         case EnRangeResultStatus::Failed:
             return "FAIL";
         case EnRangeResultStatus::TimedOut:
-            return "TIMEOUT";
+            return "TIME";
         case EnRangeResultStatus::Unreachable:
-            return "MISS";
+            return "FAIL";
         default:
             return "?";
     }
@@ -464,28 +533,6 @@ void SequentialRangingDisplay::FormatDistance(
 }
 
 /**
- * @brief 測距結果が有効なマスターTAG基準計測時刻を持つか確認します。
- *
- * @param measurement 確認する測距結果
- * @return 時刻変換済みの品質である場合はtrue、それ以外はfalse
- */
-bool SequentialRangingDisplay::HasValidMeasurementMasterTime(
-    const TimedRangeMeasurement& measurement)
-{
-    switch (measurement.timeQuality)
-    {
-        case EnTimeQuality::Synchronized:
-        case EnTimeQuality::PowerSaveEnabled:
-        case EnTimeQuality::ReceiveTimestampUnavailable:
-            return true;
-        case EnTimeQuality::SynchronizationExpired:
-        case EnTimeQuality::Unsynchronized:
-        default:
-            return false;
-    }
-}
-
-/**
  * @brief snapshotに初期化失敗が保持されているか確認します。
  *
  * @param snapshot 確認する固定長snapshot
@@ -535,7 +582,7 @@ void SequentialRangingDisplay::DrawInitializationFailure(
 }
 
 /**
- * @brief snapshotの受信ノード一覧のヘッダーと先頭3件を描画します。
+ * @brief snapshotの受信ノード一覧のヘッダーと先頭5件を描画します。
  *
  * @param snapshot 描画する固定長snapshot
  */

@@ -8,6 +8,8 @@
 
 #include <cstdint>
 
+#include "BuildOptions.h"
+
 class EspNowBroadcast;
 class EspNowReceiveQueueTerminator;
 class EspNowTransport;
@@ -16,6 +18,7 @@ class Ryuw122Controller;
 class SequentialRangingController;
 class SequentialRangingDisplay;
 class TagMasterCoordinator;
+class Print;
 struct SequentialRangingDisplaySnapshot;
 
 /**
@@ -30,6 +33,7 @@ public:
     static constexpr BaseType_t m_displayTaskCore = 0;
     static constexpr uint32_t m_rangingTaskStackSize = 8192U;
     static constexpr uint32_t m_displayTaskStackSize = 6144U;
+    static constexpr UBaseType_t m_diagnosticQueueCapacity = 8U;
 
     /**
      * @brief 高優先度更新対象と低優先度描画対象を注入します。
@@ -43,6 +47,7 @@ public:
      * @param rangingController 逐次測距controller
      * @param display 表示modelと描画処理
      * @param canvas M5画面へ転送するsprite
+     * @param diagnosticOutput 低優先度タスクだけが使用する診断出力先
      */
     RangingDisplayTaskController(
         EspNowTransport& transport,
@@ -53,7 +58,8 @@ public:
         Ryuw122Controller& ryuw122Controller,
         SequentialRangingController& rangingController,
         SequentialRangingDisplay& display,
-        M5Canvas& canvas);
+        M5Canvas& canvas,
+        Print& diagnosticOutput);
 
     /**
      * @brief snapshot queueと高・低優先度タスクを開始します。
@@ -105,9 +111,19 @@ private:
     void PublishSnapshot();
 
     /**
+     * @brief ANCHOR測距診断eventを低優先度タスク向けFIFOへ転送します。
+     */
+    void PublishDiagnostics();
+
+    /**
      * @brief 低優先度タスク上でM5入力と画面転送を繰り返します。
      */
     void RunDisplayTask();
+
+    /**
+     * @brief 低優先度タスクで測距診断eventを1行ずつ出力します。
+     */
+    void FlushDiagnostics();
 
     /**
      * @brief snapshotのノード状態とバッテリー残量を描画します。
@@ -125,7 +141,9 @@ private:
     SequentialRangingController& m_rangingController;
     SequentialRangingDisplay& m_display;
     M5Canvas& m_canvas;
+    Print& m_diagnosticOutput;
     QueueHandle_t m_snapshotQueue = nullptr;
+    QueueHandle_t m_diagnosticQueue = nullptr;
     TaskHandle_t m_rangingTask = nullptr;
     TaskHandle_t m_displayTask = nullptr;
     bool m_started = false;

@@ -21,12 +21,15 @@ struct TaskTestRuntimeState
     int m_failTaskCreateCall = 0;
     int m_queueOverwriteCount = 0;
     int m_queueReceiveCount = 0;
+    int m_queueSendCount = 0;
+    int m_serialPrintfCount = 0;
     int m_canvasPushCount = 0;
     int m_m5UpdateCount = 0;
     uint32_t m_captureGeneration = 0;
     uint32_t m_drawnGeneration = 0;
     bool m_displayUpdateChanged = true;
     std::string m_canvasText;
+    std::string m_serialText;
     std::vector<std::string> m_events;
     std::vector<std::string> m_updateOrder;
     std::vector<FakeTask*> m_tasks;

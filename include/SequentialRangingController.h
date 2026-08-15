@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "SequentialRangingProtocolCodec.h"
+#include "Ryuw122Initializer.h"
 
 class EspNowBroadcast;
 class EspNowTransport;
@@ -49,6 +50,20 @@ struct TimedRangeMeasurement
     uint64_t synchronizationAgeUs = 0;
     EnTimeQuality timeQuality = EnTimeQuality::Unsynchronized;
     bool isLastMeasurement = false;
+};
+
+/**
+ * @brief ANCHORで完了した1件の測距診断eventを表します。
+ */
+struct RangingDiagnosticEvent
+{
+    char tagAddress[9] = {};
+    EnRyuw122RangingReason reason = EnRyuw122RangingReason::ParseError;
+    uint32_t distanceMm = 0;
+    uint32_t durationMs = 0;
+    int32_t diagnosticCode = 0;
+    uint8_t anchorId = 0;
+    uint8_t tagId = 0;
 };
 
 /**
@@ -149,6 +164,14 @@ public:
     bool TryTakeCompletedRound(SequentialRangeRoundSummary& summary);
 
     /**
+     * @brief ANCHORローカルの測距診断eventを1件取得します。
+     *
+     * @param event 取得した診断eventの格納先
+     * @return 診断eventを取得した場合はtrue、それ以外はfalse
+     */
+    bool TryTakeDiagnostic(RangingDiagnosticEvent& event);
+
+    /**
      * @brief 現在の役割別状態を取得します。
      *
      * @return 現在の状態
@@ -174,6 +197,7 @@ private:
     static constexpr size_t m_maxNodeCount = 17U;
     static constexpr size_t m_highPriorityQueueCapacity = 4U;
     static constexpr size_t m_lowPriorityQueueCapacity = 80U;
+    static constexpr size_t m_diagnosticQueueCapacity = 8U;
 
     /**
      * @brief 比較用に保持するマスターセッション識別情報を表します。
@@ -384,6 +408,14 @@ private:
     bool PushRoundSummary(const SequentialRangeRoundSummary& summary);
 
     /**
+     * @brief ANCHORローカルの測距診断eventを固定長FIFOへ追加します。
+     *
+     * @param result 完了したRYUW122測距結果
+     * @return FIFOへ追加できた場合はtrue、それ以外はfalse
+     */
+    bool PushRangingDiagnostic(const Ryuw122RangingResult& result);
+
+    /**
      * @brief 現在有効でIDが一意なNodeStatusを取得します。
      *
      * @param nodeId 取得するノードID
@@ -440,6 +472,7 @@ private:
     bool m_anchorListTruncated = false;
     bool m_tagListTruncated = false;
     bool m_begun = false;
+    bool m_anchorRangingStarted = false;
     TimedRangeMeasurement m_measurementQueue[m_measurementQueueCapacity]{};
     size_t m_measurementHead = 0;
     size_t m_measurementTail = 0;
@@ -448,6 +481,10 @@ private:
     size_t m_roundHead = 0;
     size_t m_roundTail = 0;
     size_t m_roundCount = 0;
+    RangingDiagnosticEvent m_diagnosticQueue[m_diagnosticQueueCapacity]{};
+    size_t m_diagnosticHead = 0;
+    size_t m_diagnosticTail = 0;
+    size_t m_diagnosticCount = 0;
     OutboundPacket m_highPriorityQueue[m_highPriorityQueueCapacity]{};
     size_t m_highPriorityHead = 0;
     size_t m_highPriorityTail = 0;

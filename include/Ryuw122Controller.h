@@ -28,6 +28,8 @@ struct Ryuw122RangingResult
     int16_t uwbRssi = 0;
     uint32_t startedAtUs = 0;
     uint32_t completedAtUs = 0;
+    EnRyuw122RangingReason reason = EnRyuw122RangingReason::ParseError;
+    int32_t diagnosticCode = 0;
 };
 
 /**
@@ -162,12 +164,16 @@ private:
      * @param distanceMm 距離。失敗時は0
      * @param uwbRssi UWB RSSI。失敗時は0
      * @param completedAtUs 測距完了時刻
+     * @param reason 内部診断理由
+     * @param diagnosticCode RYUW122 error code。該当しない場合は0
      */
     void CompleteRanging(
         EnRyuw122RangingStatus status,
         uint32_t distanceMm,
         int16_t uwbRssi,
-        uint32_t completedAtUs);
+        uint32_t completedAtUs,
+        EnRyuw122RangingReason reason,
+        int32_t diagnosticCode = 0);
 
     /**
      * @brief timeout後の遅延応答排出状態へ移ります。
@@ -183,6 +189,7 @@ private:
     bool m_ownsPort;
     bool m_isReady = false;
     bool m_hasResult = false;
+    bool m_commandAcknowledged = false;
     EnRyuw122InitResult m_lastResult =
         EnRyuw122InitResult::SerialBeginFailed;
     EnRangingState m_rangingState = EnRangingState::Idle;

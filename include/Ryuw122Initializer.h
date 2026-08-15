@@ -18,6 +18,7 @@ enum class EnRyuw122InitResult : uint8_t
     NetworkIdWriteFailed,
     AddressReadFailed,
     AddressWriteFailed,
+    TagResponseWriteFailed,
 };
 
 /**
@@ -31,6 +32,18 @@ enum class EnRyuw122PortMode : uint8_t
 };
 
 /**
+ * @brief RYUW122測距処理の内部診断理由を表します。
+ */
+enum class EnRyuw122RangingReason : uint8_t
+{
+    Success,
+    ErrorResponse,
+    ParseError,
+    StartFailure,
+    Timeout,
+};
+
+/**
  * @brief RYUW122 portが受信した測距応答を保持します。
  */
 struct Ryuw122PortResponse
@@ -39,6 +52,9 @@ struct Ryuw122PortResponse
     bool isSuccess = false;
     int32_t distanceCm = 0;
     int16_t uwbRssi = 0;
+    EnRyuw122RangingReason reason = EnRyuw122RangingReason::ParseError;
+    int32_t diagnosticCode = 0;
+    bool isAcknowledgement = false;
 };
 
 /**
@@ -117,6 +133,15 @@ public:
      * @return 設定できた場合はtrue、それ以外はfalse
      */
     virtual bool SetAddress(const char* address) = 0;
+
+    /**
+     * @brief TAG動作時にANCHORへ返すpayloadを登録します。
+     *
+     * @param length payload長
+     * @param data 登録するpayload
+     * @return 登録できた場合はtrue、それ以外はfalse
+     */
+    virtual bool SetTagResponse(uint8_t length, const char* data) = 0;
 
     /**
      * @brief 指定TAGへの測距コマンドを待機せず送信します。
@@ -200,6 +225,13 @@ private:
      * @return アドレス設定結果
      */
     EnRyuw122InitResult ConfigureAddress();
+
+    /**
+     * @brief TAG動作時の測距応答payloadを登録します。
+     *
+     * @return payload登録結果
+     */
+    EnRyuw122InitResult ConfigureTagResponse();
 
     IRyuw122Port& m_port;
     ConfigRuntime& m_configRuntime;

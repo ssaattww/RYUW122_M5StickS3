@@ -32,6 +32,7 @@ classDiagram
 
     class IRyuw122Port
     class Ryuw122HardwarePort
+    class Ryuw122ResponseParser
     class Ryuw122Controller
 
     class SequentialRangingProtocolCodec
@@ -60,6 +61,7 @@ classDiagram
 
     IRyuw122Port <|.. Ryuw122HardwarePort : implements
     Ryuw122Controller --> IRyuw122Port : UART port abstraction
+    Ryuw122HardwarePort ..> Ryuw122ResponseParser : response parsing
     Ryuw122Controller --> ConfigRuntime : mode / node ID
 
     SequentialRangingController --> EspNowTransport : send / shared RX FIFO
@@ -83,9 +85,10 @@ classDiagram
     RangingDisplayTaskController --> SequentialRangingController : high-priority update
     RangingDisplayTaskController --> SequentialRangingDisplay : snapshot / draw
     RangingDisplayTaskController --> M5Canvas : sprite transfer / failure display
+    RangingDisplayTaskController --> Print : low-priority diagnostics
 ```
 
-図の矢印は、矢印元が矢印先を利用する依存を表す。`NtShellThread`と`Ryuw122HardwarePort`は公開ヘッダーから直接生成するクラスではなく、実装内部のクラスである。
+図の矢印は、矢印元が矢印先を利用する依存を表す。`NtShellThread`と`Ryuw122HardwarePort`は公開ヘッダーから直接生成するクラスではなく、実装内部のクラスである。`Ryuw122ResponseParser`はproductionとnative testが共通利用する公開parserである。
 
 ## 3. クラス別責務
 
@@ -104,13 +107,14 @@ classDiagram
 | `TagMasterCoordinator` | 有効なTAGの最小ノードIDをマスターとして選出し、自ノードのmaster/follower判定、session ID、マスター変更通知を管理する | `EspNowBroadcast` | `NtpTimeSynchronizer`, `SequentialRangingController` |
 | `NtpTimeProtocolCodec` | NTP同期要求、応答、commitの固定wire形式をencode/decodeし、headerを検証する | なし | `NtpTimeSynchronizer` |
 | `NtpTimeSynchronizer` | マスターTAGと非マスターノード間のNTP四時刻同期、3サンプルからの最小RTT選択、同期結果通知、32bitローカル時刻から64bitマスター時刻への変換を担当する | `EspNowTransport`, `EspNowBroadcast`, `TagMasterCoordinator`, `ConfigRuntime`, `NtpTimeProtocolCodec` | `SequentialRangingController` |
-| `IRyuw122Port` | RYUW122初期化、設定、非同期測距開始、受信更新、応答取得を差し替え可能にするport interface | なし | `Ryuw122Controller` |
+| `IRyuw122Port` | RYUW122初期化、設定、TAG応答payload登録、非同期測距開始、受信更新、応答取得を差し替え可能にするport interface | なし | `Ryuw122Controller` |
 | `Ryuw122HardwarePort` | `HardwareSerial`とRYUW122ライブラリを`IRyuw122Port`へ接続し、UART行解析と固定長応答FIFOを実装する | `HardwareSerial`, RYUW122ライブラリ | `Ryuw122Controller`が実機用constructorで所有 |
-| `Ryuw122Controller` | RYUW122のモード、network ID、address初期化と、ANCHORからTAGへの非同期測距、300ms timeout、遅延応答排出を管理する | `ConfigRuntime`, `IRyuw122Port` | `SequentialRangingController`, `main.cpp` |
+| `Ryuw122ResponseParser` | 公式4 fieldと任意RSSI付きANCHOR応答、距離の数値・`cm`表記、`+ERR=<n>`を厳密解析する | RYUW122 payload上限 | `Ryuw122HardwarePort`, `native_t005` |
+| `Ryuw122Controller` | RYUW122のモード、network ID、address、TAG応答payload初期化と、ANCHORからTAGへの非同期測距、300ms timeout、遅延応答排出、内部診断理由を管理する | `ConfigRuntime`, `IRyuw122Port` | `SequentialRangingController`, `main.cpp` |
 | `SequentialRangingProtocolCodec` | `RangeControl`、測距結果、forward結果、round completeの固定wire形式をencode/decode・検証する | なし | `SequentialRangingController` |
-| `SequentialRangingController` | master/follower/ANCHORの役割別状態機械、ANCHOR×TAGの二重ループ、逐次結果公開、round管理、時刻変換、優先度別送信FIFOを統括する | `EspNowTransport`, `EspNowBroadcast`, `TagMasterCoordinator`, `NtpTimeSynchronizer`, `Ryuw122Controller`, `SequentialRangingProtocolCodec` | `SequentialRangingDisplay`, `RangingDisplayTaskController` |
-| `SequentialRangingDisplay` | 高優先度taskでcontrollerの最新測距結果・round summary・状態、broadcastの受信ノード一覧、現在master時刻を表示modelへ取り込み、固定長snapshotを生成する。低優先度taskではsnapshotだけを`M5Canvas`へ描画する | `SequentialRangingController`, `EspNowBroadcast`, `NtpTimeSynchronizer`, `M5Canvas` | `RangingDisplayTaskController` |
-| `RangingDisplayTaskController` | core 1・priority 4の通信/同期/測距/model更新taskと、core 0・priority 1のM5更新/描画/sprite転送taskを開始・停止する。両task間はcapacity 1のsnapshot queueで同期し、開始失敗時は部分生成物を破棄して永続診断を描画する | 通信・同期・測距・表示の各controller、`M5Canvas`, FreeRTOS task/queue | `main.cpp` |
+| `SequentialRangingController` | master/follower/ANCHORの役割別状態機械、ANCHOR×TAGの二重ループ、逐次結果公開、round管理、時刻変換、優先度別送信FIFO、ANCHORローカル診断FIFOを統括する | `EspNowTransport`, `EspNowBroadcast`, `TagMasterCoordinator`, `NtpTimeSynchronizer`, `Ryuw122Controller`, `SequentialRangingProtocolCodec` | `SequentialRangingDisplay`, `RangingDisplayTaskController` |
+| `SequentialRangingDisplay` | 高優先度taskで成功last-success、current failure、状態、受信ノード最大5件、現在master時刻を表示modelへ取り込み、固定長snapshotを生成する。低優先度taskではsnapshotだけを`M5Canvas`へ描画する | `SequentialRangingController`, `EspNowBroadcast`, `NtpTimeSynchronizer`, `M5Canvas` | `RangingDisplayTaskController` |
+| `RangingDisplayTaskController` | core 1・priority 4の通信/同期/測距/model更新taskと、core 0・priority 1のM5更新/診断Serial/描画/sprite転送taskを開始・停止する。両task間はcapacity 1のsnapshot queueと診断版capacity 8 event queueで同期し、開始失敗時は部分生成物を破棄して永続診断を描画する | 通信・同期・測距・表示の各controller、`M5Canvas`, `Print`, FreeRTOS task/queue | `main.cpp` |
 
 ## 4. 設定系の関係
 
@@ -145,8 +149,9 @@ flowchart TD
     D --> E[NtpTimeSynchronizer.Update]
     E --> F[Ryuw122Controller.Update]
     F --> G[SequentialRangingController.Update]
-    G --> H[EspNowReceiveQueueTerminator.Update]
-    H --> I[SequentialRangingDisplay.Update / CaptureSnapshot]
+    G --> H[Ranging diagnostic event queue]
+    H --> I[EspNowReceiveQueueTerminator.Update]
+    I --> J[SequentialRangingDisplay.Update / CaptureSnapshot]
 ```
 
 `CaptureSnapshot()`はcapacity 1のFreeRTOS queueへ最新snapshotを上書きする。
@@ -154,12 +159,13 @@ core 0・priority 1の低優先度画面taskは、次の順序だけを担当す
 
 ```mermaid
 flowchart TD
-    A[M5.update] --> B[Latest snapshot receive]
-    B --> C[SequentialRangingDisplay.Draw]
-    C --> D[M5Canvas.pushSprite]
+    A[M5.update] --> B[Diagnostic queue drain / Serial]
+    B --> C[Latest snapshot receive]
+    C --> D[SequentialRangingDisplay.Draw]
+    D --> E[M5Canvas.pushSprite]
 ```
 
-画面taskはcontroller、broadcast、NTP、RYUW122の状態やFIFOへ直接触れない。
+画面taskはcontroller、broadcast、NTP、RYUW122の状態やFIFOへ直接触れず、task間queueだけを読む。
 Arduinoの`loop()`は通信・測距・描画を実行せず、専用taskへ実行権を渡す待機だけを行う。
 
 共有受信FIFOを直接扱う既知consumerは次の3クラスである。
@@ -207,19 +213,21 @@ classDiagram
         <<interface>>
     }
     class Ryuw122HardwarePort
+    class Ryuw122ResponseParser
     class Ryuw122Controller
     class SequentialRangingController
 
     IRyuw122Port <|.. Ryuw122HardwarePort
+    Ryuw122HardwarePort ..> Ryuw122ResponseParser
     Ryuw122Controller --> IRyuw122Port
     SequentialRangingController --> Ryuw122Controller
 ```
 
 実機用constructorでは`Ryuw122Controller`が`Ryuw122HardwarePort`を生成・所有する。差し替え用constructorでは外部から`IRyuw122Port`を注入し、controllerはそのportを所有しない。
 
-`Ryuw122HardwarePort`は`src/Ryuw122Controller.cpp`内の実装詳細で、G7 TX、G1 RX、115200bpsのUART、受信行解析、固定長応答FIFOを扱う。`Ryuw122Controller`はその上で初期化条件、測距中状態、timeout、遅延応答排出、公開する`Ryuw122RangingResult`を管理する。
+`Ryuw122HardwarePort`は`src/Ryuw122Controller.cpp`内の実装詳細で、G7 TX、G1 RX、115200bpsのUARTと固定長応答FIFOを扱う。受信行は`Ryuw122ResponseParser`が公式4 fieldと任意RSSI付き形式、数値または空白付き`cm`距離、`+ERR=<n>`を解析し、portはcommand受付の`+OK`も通知する。TAG初期化時は応答payload `T`を登録し、ANCHORはpayload `A`を付けて測距を開始する。`Ryuw122Controller`はその上で初期化条件、測距中状態、timeout、遅延応答排出、公開する`Ryuw122RangingResult`と内部診断理由を管理する。timeout診断は`+OK`未観測を`CODE=0`、観測後に測距完了応答なしを`CODE=1`として区別する。
 
-`SequentialRangingController`はUARTやAT応答を直接扱わず、`StartRanging()`、`Update()`、`TryTakeResult()`を通じて非同期測距だけを利用する。
+`SequentialRangingController`はUARTやAT応答を直接扱わず、`StartRanging()`、`Update()`、`TryTakeResult()`を通じて非同期測距だけを利用する。timeout後の遅延応答排出中に次の制御を受信した場合は、RYUW122の`Busy`解除まで開始を保留する。`Busy`は`START`失敗へ変換せず、開始済み状態を明示して同一組み合わせのUART commandを重複送信しない。
 
 ## 8. 逐次測距と表示の関係
 
@@ -234,9 +242,9 @@ classDiagram
 - `Ryuw122Controller`: ANCHORでの非同期UWB測距
 - `SequentialRangingProtocolCodec`: 逐次測距wire packetの変換と検証
 
-主な出力は、固定長FIFOから`TryTakeMeasurement()`で取得する`TimedRangeMeasurement`と、`TryTakeCompletedRound()`で取得する`SequentialRangeRoundSummary`である。
+主な出力は、固定長FIFOから`TryTakeMeasurement()`で取得する`TimedRangeMeasurement`、`TryTakeCompletedRound()`で取得する`SequentialRangeRoundSummary`、ANCHORローカルで`TryTakeDiagnostic()`から取得する`RangingDiagnosticEvent`である。内部診断理由はwire packetへ追加しない。
 
-高優先度taskでは`SequentialRangingDisplay`がこれらを取り出して最新表示modelとして保持し、`EspNowBroadcast::GetNodes()`の受信ノード一覧と`NtpTimeSynchronizer`の現在master時刻を反映する。
+高優先度taskでは`SequentialRangingDisplay`が測距結果を成功last-successとcurrent failureへ分けて保持し、`EspNowBroadcast::GetNodes()`の受信ノード最大5件と`NtpTimeSynchronizer`の現在master時刻を反映する。失敗はlast-successを上書きせず、次回成功で同じANCHORのcurrent failureを解除する。
 modelは固定長`SequentialRangingDisplaySnapshot`へコピーされ、capacity 1のqueueで低優先度画面taskへ渡される。
 画面taskはsnapshotだけを描画するため、無線送信、マスター選出、時刻変換、UWB測距を実行しない。
 
@@ -248,6 +256,9 @@ modelは固定長`SequentialRangingDisplaySnapshot`へコピーされ、capacity
 
 `NtShell::Start()`は内部の`NtShellThread`を`std::thread`で開始し、NT-Shellのブロッキング`ntshell_execute()`をそのスレッド内へ閉じ込める。メイン`loop()`はNT-Shellの入力待ちではブロックされない。
 
+コード既定値と通常の`m5stack-sticks3`は`NT_SHELL_ENABLED=1`、`RANGING_DIAGNOSTICS_ENABLED=0`で、NT-Shellを開始してstatus barへ`SH`を表示する。`m5stack-sticks3-diagnostic`は両値を0、1へ切り替え、NT-Shellを開始しない。
+診断版では高優先度taskが固定長eventをcapacity 8 queueへ渡し、低優先度画面taskだけが`RANGE A=...`形式へ整形してSerial出力する。通常版は診断Serial出力を行わない。
+
 現在は`PreferenceCommands`のNVS操作が`NvsPreferenceStore`を直接使用する。`NvsPreferenceStore`の公開操作はミューテックスで排他されるため、NT-ShellスレッドからのNVSアクセスと他のNVS利用を同じstoreに集約できる。
 
 ## 10. `main.cpp`の生成順と開始順
@@ -255,7 +266,7 @@ modelは固定長`SequentialRangingDisplaySnapshot`へコピーされ、capacity
 現在のグローバルオブジェクト生成順は次のとおりである。参照先が先に構築される順序になっている。
 
 ```text
-NtShell
+NtShell（通常版のみ）
 NvsPreferenceStore
 PreferenceCommands
 ConfigPreference
@@ -284,14 +295,14 @@ EspNowBroadcast.Begin
 TagMasterCoordinator.Begin
 SequentialRangingController.Begin
 SequentialRangingDisplay.SetInitializationHealth
-NtShell.RegisterCommands
-NtShell.Start
+NtShell.RegisterCommands（通常版のみ）
+NtShell.Start（通常版のみ）
 RangingDisplayTaskController.Begin
 Begin失敗時はRangingDisplayTaskController.ShowTaskStartFailure
 ```
 
 `SequentialRangingController::Begin()`はESP-NOW transport/broadcastの開始に成功し、かつ`Ryuw122Controller::Begin()`が成功した場合だけ呼び出す。`TagMasterCoordinator::Begin()`はESP-NOW開始成功時に呼び出す。
-`RangingDisplayTaskController::Begin()`はcapacity 1のsnapshot queue、高優先度測距task、低優先度画面taskを順に作成する。
+`RangingDisplayTaskController::Begin()`はcapacity 1のsnapshot queue、診断版のcapacity 8 event queue、高優先度測距task、低優先度画面taskを順に作成する。
 作成途中で失敗した場合は`End()`が作成済みtaskを停止してからqueueを解放し、`main.cpp`がfalseの戻り値を判定して`TASK START FAILED`を画面へ永続表示する。
 開始後のArduino `loop()`は1秒待機だけを繰り返す。
 
@@ -300,8 +311,8 @@ Begin失敗時はRangingDisplayTaskController.ShowTaskStartFailure
 - 永続設定は`NvsPreferenceStore`と`ConfigPreference`、実行時設定は`ConfigRuntime`へ分離する。
 - ESP-NOW callbackとqueue所有は`EspNowTransport`へ集約し、上位consumerは共有FIFOをpacket種別ごとに協調して消費する。
 - ノード表は`EspNowBroadcast`、master/sessionは`TagMasterCoordinator`、時計差は`NtpTimeSynchronizer`がそれぞれ所有する。
-- RYUW122のUART詳細は`IRyuw122Port`境界の内側へ閉じ込め、逐次測距は`Ryuw122Controller`の非同期APIだけを使用する。
+- RYUW122のUART詳細は`IRyuw122Port`境界の内側へ閉じ込め、応答構文は`Ryuw122ResponseParser`、逐次測距は`Ryuw122Controller`の非同期APIだけを使用する。
 - 測距round全体の状態機械は`SequentialRangingController`へ集約し、表示modelとsnapshot描画は`SequentialRangingDisplay`へ分離する。
-- 通信・同期・測距・表示model更新と画面転送のtask所有、capacity 1 snapshot queue、開始失敗cleanupは`RangingDisplayTaskController`へ集約する。
+- 通信・同期・測距・表示model更新と画面転送のtask所有、capacity 1 snapshot queue、診断版capacity 8 event queue、開始失敗cleanupは`RangingDisplayTaskController`へ集約する。
 - wire形式変換は`NodeStatusCodec`、`NtpTimeProtocolCodec`、`SequentialRangingProtocolCodec`へ分離する。
 - NT-Shellのブロッキング実行は専用スレッドへ分離し、コマンド実装は`PreferenceCommands`から外部登録する。

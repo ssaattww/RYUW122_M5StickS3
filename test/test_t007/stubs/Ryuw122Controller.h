@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "Ryuw122Initializer.h"
+
 enum class EnRyuw122RangingStatus : uint8_t
 {
     Success,
@@ -18,6 +20,8 @@ struct Ryuw122RangingResult
     int16_t uwbRssi = 0;
     uint32_t startedAtUs = 0;
     uint32_t completedAtUs = 0;
+    EnRyuw122RangingReason reason = EnRyuw122RangingReason::ParseError;
+    int32_t diagnosticCode = 0;
 };
 
 class Ryuw122Controller
@@ -48,6 +52,26 @@ public:
         return true;
     }
 
+    /**
+     * @brief test用の結果待ちまたはdrain中状態を返します。
+     *
+     * @return 開始を保留すべき場合はtrue
+     */
+    bool IsBusy() const
+    {
+        return m_forcedBusy || m_hasResult;
+    }
+
+    /**
+     * @brief test用にdrain相当のBusy状態を設定します。
+     *
+     * @param busy Busyとして扱う場合はtrue
+     */
+    void SetBusy(bool busy)
+    {
+        m_forcedBusy = busy;
+    }
+
     void Complete(const Ryuw122RangingResult& result)
     {
         m_result = result;
@@ -71,4 +95,5 @@ private:
     size_t m_startCount = 0;
     Ryuw122RangingResult m_result{};
     bool m_hasResult = false;
+    bool m_forcedBusy = false;
 };

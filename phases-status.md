@@ -4,9 +4,9 @@
 
 ## 全体状況
 
-- 総フェーズ数: 10
-- 完了フェーズ数: 10
-- 現在フェーズ: なし
+- 総フェーズ数: 12
+- 完了フェーズ数: 12
+- 現在フェーズ: なし（P12完了）
 - 次フェーズ: なし
 - 実装開始条件: ユーザーによる設計・タスク分解の確認
 - 実行方式: 1タスクずつ実装、検証、進捗同期、個別コミット
@@ -28,6 +28,7 @@
 | P9 | 画面表示改善 | T-013 | 完了 | 接続先3件、TAGごとの全ANCHOR距離、計測時刻、現在統一時刻をmain外の表示クラスで確認できる |
 | P10 | NTP実機復旧 | T-014 | 完了 | 同一時計基準、後参加、失敗再試行、30秒周期再同期を実機向け経路で確認できる |
 | P11 | リアルタイム実行分離 | T-015 | 完了 | 測距を高優先度、画面描画を低優先度の独立タスクで動作させる |
+| P12 | UWB実機診断と表示分離 | T-016 | 完了 | 実応答を正しく解析し、成功・失敗・NodeStatusを独立表示する |
 
 ## フェーズ詳細
 
@@ -218,3 +219,30 @@
 - task開始失敗時のcleanupと永続診断、不完全なruntime mode切替の廃止を実装した。
 - production task controllerを直接実行するnative testを追加し、focused 19/19、全native 96/96、M5StickS3 clean/full buildに成功した。
 - T015-NR-001からT015-NR-004はすべてresolved、fix verificationは`pass_with_held`である。
+
+### P12 UWB実機診断と表示分離
+
+成果物:
+
+- RYUW122実応答互換parser
+- 成功5件・失敗5件・NodeStatus 5件の画面表示
+- 通常NT-Shell buildとNT-Shell無効の診断build
+- 非blocking測距診断queueと`plink`実機ログ
+
+終了判定:
+
+- RSSI省略と`cm`付き距離を正常応答として扱える。
+- 距離成功値が後続失敗で消えない。
+- 画面内に3領域を各5件表示できる。
+- NT-Shell有効状態がステータスバーで確認できる。
+- 実機ログからFAIL原因と測距所要時間を判断できる。
+- 通常レビューの必須修正findingが残っていない。
+
+完了結果:
+
+- RSSI省略・`cm`付き距離を含む実応答parser、成功5件・失敗5件・NodeStatus 5件の独立表示、通常／診断build切替を実装した。
+- TAGの`AT+TAG_SEND=1,T`登録欠落と、timeout drain Busyを開始失敗へ変換する連鎖を修正した。
+- COM10 TAG ID0とCOM7 ANCHOR ID1の実機で連続`OK`、距離340から950mm、主に64から66ms、最短56msを確認し、観測区間のFAILは0件だった。
+- 全native test 105/105、通常・診断M5StickS3 clean/full build、`git diff --check`が成功した。
+- T016-NR-001からT016-NR-003はresolvedで、通常fix verificationは`pass_with_held`、新規findingとunexploredはない。
+- masterまたはsession切替と旧result drainの実機境界、queue飽和、5/5/5と`SH`の実画面、失敗別診断経路、remote CI、repository固有Markdown lintはheldとして追跡する。

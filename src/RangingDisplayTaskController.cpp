@@ -1,5 +1,6 @@
 #include "RangingDisplayTaskController.h"
 
+#include <Arduino.h>
 #include <M5Unified.h>
 
 #include <cstdio>
@@ -17,6 +18,33 @@
 namespace
 {
     constexpr int StatusBarHeight = 20;
+
+#if RANGING_DIAGNOSTICS_ENABLED
+    /**
+     * @brief 内部診断理由を1行出力用の短縮名へ変換します。
+     *
+     * @param reason 変換する内部診断理由
+     * @return 診断出力用の固定文字列
+     */
+    const char* GetDiagnosticResultName(EnRyuw122RangingReason reason)
+    {
+        switch (reason)
+        {
+            case EnRyuw122RangingReason::Success:
+                return "OK";
+            case EnRyuw122RangingReason::ErrorResponse:
+                return "ERR";
+            case EnRyuw122RangingReason::ParseError:
+                return "PARSE";
+            case EnRyuw122RangingReason::StartFailure:
+                return "START";
+            case EnRyuw122RangingReason::Timeout:
+                return "TIMEOUT";
+            default:
+                return "PARSE";
+        }
+    }
+#endif
 }
 
 /**
@@ -31,6 +59,7 @@ namespace
  * @param rangingController 逐次測距controller
  * @param display 表示modelと描画処理
  * @param canvas M5画面へ転送するsprite
+ * @param diagnosticOutput 低優先度タスクだけが使用する診断出力先
  */
 RangingDisplayTaskController::RangingDisplayTaskController(
     EspNowTransport& transport,
@@ -41,7 +70,8 @@ RangingDisplayTaskController::RangingDisplayTaskController(
     Ryuw122Controller& ryuw122Controller,
     SequentialRangingController& rangingController,
     SequentialRangingDisplay& display,
-    M5Canvas& canvas)
+    M5Canvas& canvas,
+    Print& diagnosticOutput)
     : m_transport(transport),
       m_receiveQueueTerminator(receiveQueueTerminator),
       m_broadcast(broadcast),
@@ -50,7 +80,8 @@ RangingDisplayTaskController::RangingDisplayTaskController(
       m_ryuw122Controller(ryuw122Controller),
       m_rangingController(rangingController),
       m_display(display),
-      m_canvas(canvas)
+      m_canvas(canvas),
+      m_diagnosticOutput(diagnosticOutput)
 {
 }
 
@@ -74,6 +105,17 @@ bool RangingDisplayTaskController::Begin()
         End();
         return false;
     }
+
+#if RANGING_DIAGNOSTICS_ENABLED
+    m_diagnosticQueue = xQueueCreate(
+        m_diagnosticQueueCapacity,
+        sizeof(RangingDiagnosticEvent));
+    if (m_diagnosticQueue == nullptr)
+    {
+        End();
+        return false;
+    }
+#endif
 
     PublishSnapshot();
     if (xTaskCreatePinnedToCore(
@@ -133,6 +175,11 @@ void RangingDisplayTaskController::End()
         vTaskDelete(m_rangingTask);
         m_rangingTask = nullptr;
     }
+    if (m_diagnosticQueue != nullptr)
+    {
+        vQueueDelete(m_diagnosticQueue);
+        m_diagnosticQueue = nullptr;
+    }
     if (m_snapshotQueue != nullptr)
     {
         vQueueDelete(m_snapshotQueue);
@@ -189,6 +236,7 @@ void RangingDisplayTaskController::UpdateRangingCycle()
     m_timeSynchronizer.Update();
     m_ryuw122Controller.Update();
     m_rangingController.Update();
+    PublishDiagnostics();
     m_receiveQueueTerminator.Update();
     if (m_display.Update())
     {
@@ -207,6 +255,20 @@ void RangingDisplayTaskController::PublishSnapshot()
 }
 
 /**
+ * @brief ANCHOR測距診断eventを低優先度タスク向けFIFOへ転送します。
+ */
+void RangingDisplayTaskController::PublishDiagnostics()
+{
+#if RANGING_DIAGNOSTICS_ENABLED
+    RangingDiagnosticEvent event{};
+    while (m_rangingController.TryTakeDiagnostic(event))
+    {
+        xQueueSend(m_diagnosticQueue, &event, 0U);
+    }
+#endif
+}
+
+/**
  * @brief 低優先度タスク上でM5入力と画面転送を繰り返します。
  */
 void RangingDisplayTaskController::RunDisplayTask()
@@ -215,6 +277,7 @@ void RangingDisplayTaskController::RunDisplayTask()
     for (;;)
     {
         M5.update();
+        FlushDiagnostics();
         SequentialRangingDisplaySnapshot receivedSnapshot{};
         if (xQueueReceive(
                 m_snapshotQueue,
@@ -229,6 +292,28 @@ void RangingDisplayTaskController::RunDisplayTask()
         }
         vTaskDelay(1U);
     }
+}
+
+/**
+ * @brief 低優先度タスクで測距診断eventを1行ずつ出力します。
+ */
+void RangingDisplayTaskController::FlushDiagnostics()
+{
+#if RANGING_DIAGNOSTICS_ENABLED
+    RangingDiagnosticEvent event{};
+    while (xQueueReceive(m_diagnosticQueue, &event, 0U) == pdTRUE)
+    {
+        m_diagnosticOutput.printf(
+            "RANGE A=%u T=%u/%s RESULT=%s DIST=%lu DUR=%lu CODE=%ld\r\n",
+            event.anchorId,
+            event.tagId,
+            event.tagAddress,
+            GetDiagnosticResultName(event.reason),
+            static_cast<unsigned long>(event.distanceMm),
+            static_cast<unsigned long>(event.durationMs),
+            static_cast<long>(event.diagnosticCode));
+    }
+#endif
 }
 
 /**
@@ -252,9 +337,10 @@ void RangingDisplayTaskController::DrawStatus(
     snprintf(
         statusText,
         sizeof(statusText),
-        "ID:%u %s",
+        "ID:%u %s%s",
         snapshot.m_nodeId,
-        ConfigPreference::GetModeName(snapshot.m_mode));
+        ConfigPreference::GetModeName(snapshot.m_mode),
+        NT_SHELL_ENABLED ? " SH" : "");
     m_canvas.setCursor(4, 6);
     m_canvas.print(statusText);
 

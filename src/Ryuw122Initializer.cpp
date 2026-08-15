@@ -50,7 +50,13 @@ EnRyuw122InitResult Ryuw122Initializer::Begin()
         return result;
     }
 
-    return ConfigureAddress();
+    result = ConfigureAddress();
+    if (result != EnRyuw122InitResult::Ok)
+    {
+        return result;
+    }
+
+    return ConfigureTagResponse();
 }
 
 const char* Ryuw122Initializer::GetResultName(EnRyuw122InitResult result)
@@ -75,6 +81,8 @@ const char* Ryuw122Initializer::GetResultName(EnRyuw122InitResult result)
         return "ADDRESS_READ";
     case EnRyuw122InitResult::AddressWriteFailed:
         return "ADDRESS_WRITE";
+    case EnRyuw122InitResult::TagResponseWriteFailed:
+        return "TAG_SEND";
     }
 
     return "UNKNOWN";
@@ -151,4 +159,16 @@ EnRyuw122InitResult Ryuw122Initializer::ConfigureAddress()
     }
 
     return EnRyuw122InitResult::Ok;
+}
+
+EnRyuw122InitResult Ryuw122Initializer::ConfigureTagResponse()
+{
+    if (m_configRuntime.GetRunMode() != EnRunMode::Tag)
+    {
+        return EnRyuw122InitResult::Ok;
+    }
+
+    return m_port.SetTagResponse(1U, "T")
+        ? EnRyuw122InitResult::Ok
+        : EnRyuw122InitResult::TagResponseWriteFailed;
 }

@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstring>
 
+#include "Arduino.h"
 #include "EspNowBroadcast.h"
 #include "EspNowReceiveQueueTerminator.h"
 #include "EspNowTransport.h"
@@ -47,6 +48,7 @@ namespace
         SequentialRangingController m_ranging;
         SequentialRangingDisplay m_display;
         M5Canvas m_canvas;
+        Print m_diagnosticOutput;
         RangingDisplayTaskController m_controller;
 
         /**
@@ -62,7 +64,8 @@ namespace
                   m_ryuw122,
                   m_ranging,
                   m_display,
-                  m_canvas)
+                  m_canvas,
+                  m_diagnosticOutput)
         {
         }
     };
@@ -113,7 +116,7 @@ void TestBeginCreatesConfiguredTasksAndInitialSnapshot()
 
     TEST_ASSERT_TRUE(fixture.m_controller.Begin());
     TEST_ASSERT_TRUE(fixture.m_controller.IsStarted());
-    TEST_ASSERT_EQUAL_INT(1, g_taskTestRuntime.m_queueCreateCallCount);
+    TEST_ASSERT_EQUAL_INT(2, g_taskTestRuntime.m_queueCreateCallCount);
     TEST_ASSERT_EQUAL_INT(1, g_taskTestRuntime.m_queueOverwriteCount);
 
     const FakeTask* ranging = FindTask("ranging");
@@ -173,6 +176,39 @@ void TestRangingOrderOverwriteAndDisplayLatestSnapshot()
 }
 
 /**
+ * @brief 診断eventが高優先度taskでは出力されず低優先度taskだけで整形されることを確認します。
+ */
+void TestDiagnosticQueuePreservesSerialBoundary()
+{
+    ResetTaskTestRuntime();
+    TaskControllerFixture fixture;
+    TEST_ASSERT_TRUE(fixture.m_controller.Begin());
+
+    RangingDiagnosticEvent event{};
+    memcpy(event.tagAddress, "T0000002", sizeof(event.tagAddress));
+    event.reason = EnRyuw122RangingReason::ErrorResponse;
+    event.distanceMm = 0U;
+    event.durationMs = 17U;
+    event.diagnosticCode = 4;
+    event.anchorId = 8U;
+    event.tagId = 2U;
+    fixture.m_ranging.PushDiagnostic(event);
+
+    TEST_ASSERT_TRUE(RunTaskTestCycle("ranging"));
+    TEST_ASSERT_EQUAL_INT(1, g_taskTestRuntime.m_queueSendCount);
+    TEST_ASSERT_EQUAL_INT(0, g_taskTestRuntime.m_serialPrintfCount);
+    TEST_ASSERT_EQUAL_STRING("", g_taskTestRuntime.m_serialText.c_str());
+
+    TEST_ASSERT_TRUE(RunTaskTestCycle("display"));
+    TEST_ASSERT_EQUAL_INT(1, g_taskTestRuntime.m_serialPrintfCount);
+    TEST_ASSERT_EQUAL_STRING(
+        "RANGE A=8 T=2/T0000002 RESULT=ERR DIST=0 DUR=17 CODE=4\r\n",
+        g_taskTestRuntime.m_serialText.c_str());
+
+    fixture.m_controller.End();
+}
+
+/**
  * @brief queue作成失敗を安全に終了して永続診断を描画できることを確認します。
  */
 void TestQueueCreationFailureShowsPersistentDiagnostic()
@@ -193,6 +229,23 @@ void TestQueueCreationFailureShowsPersistentDiagnostic()
 }
 
 /**
+ * @brief 診断queue作成失敗時にsnapshot queueを解放することを確認します。
+ */
+void TestDiagnosticQueueCreationFailureCleansSnapshotQueue()
+{
+    ResetTaskTestRuntime();
+    g_taskTestRuntime.m_failQueueCreateCall = 2;
+    TaskControllerFixture fixture;
+
+    TEST_ASSERT_FALSE(fixture.m_controller.Begin());
+    TEST_ASSERT_FALSE(fixture.m_controller.IsStarted());
+    TEST_ASSERT_EQUAL_UINT32(0U, g_taskTestRuntime.m_tasks.size());
+    TEST_ASSERT_EQUAL_STRING(
+        "delete_queue",
+        g_taskTestRuntime.m_events.back().c_str());
+}
+
+/**
  * @brief ranging task作成失敗時にsnapshot queueを解放することを確認します。
  */
 void TestRangingTaskCreationFailureCleansQueue()
@@ -204,9 +257,10 @@ void TestRangingTaskCreationFailureCleansQueue()
     TEST_ASSERT_FALSE(fixture.m_controller.Begin());
     TEST_ASSERT_FALSE(fixture.m_controller.IsStarted());
     TEST_ASSERT_EQUAL_UINT32(0U, g_taskTestRuntime.m_tasks.size());
-    TEST_ASSERT_EQUAL_STRING(
-        "delete_queue",
-        g_taskTestRuntime.m_events.back().c_str());
+    const size_t count = g_taskTestRuntime.m_events.size();
+    TEST_ASSERT_TRUE(count >= 2U);
+    TEST_ASSERT_EQUAL_STRING("delete_queue", g_taskTestRuntime.m_events[count - 2U].c_str());
+    TEST_ASSERT_EQUAL_STRING("delete_queue", g_taskTestRuntime.m_events[count - 1U].c_str());
 }
 
 /**
@@ -222,9 +276,12 @@ void TestDisplayTaskCreationFailureCleansPartialTaskAndShowsDiagnostic()
     TEST_ASSERT_FALSE(fixture.m_controller.IsStarted());
     TEST_ASSERT_EQUAL_UINT32(0U, g_taskTestRuntime.m_tasks.size());
     const size_t count = g_taskTestRuntime.m_events.size();
-    TEST_ASSERT_TRUE(count >= 2U);
+    TEST_ASSERT_TRUE(count >= 3U);
     TEST_ASSERT_EQUAL_STRING(
         "delete_task:ranging",
+        g_taskTestRuntime.m_events[count - 3U].c_str());
+    TEST_ASSERT_EQUAL_STRING(
+        "delete_queue",
         g_taskTestRuntime.m_events[count - 2U].c_str());
     TEST_ASSERT_EQUAL_STRING(
         "delete_queue",
@@ -237,7 +294,7 @@ void TestDisplayTaskCreationFailureCleansPartialTaskAndShowsDiagnostic()
 }
 
 /**
- * @brief Endがdisplay、ranging、snapshot queueの順で停止・解放することを確認します。
+ * @brief Endが2 task停止後にdiagnostic、snapshot queueを解放することを確認します。
  */
 void TestEndStopsTasksBeforeDeletingQueue()
 {
@@ -247,12 +304,15 @@ void TestEndStopsTasksBeforeDeletingQueue()
 
     fixture.m_controller.End();
     const size_t count = g_taskTestRuntime.m_events.size();
-    TEST_ASSERT_TRUE(count >= 3U);
+    TEST_ASSERT_TRUE(count >= 4U);
     TEST_ASSERT_EQUAL_STRING(
         "delete_task:display",
-        g_taskTestRuntime.m_events[count - 3U].c_str());
+        g_taskTestRuntime.m_events[count - 4U].c_str());
     TEST_ASSERT_EQUAL_STRING(
         "delete_task:ranging",
+        g_taskTestRuntime.m_events[count - 3U].c_str());
+    TEST_ASSERT_EQUAL_STRING(
+        "delete_queue",
         g_taskTestRuntime.m_events[count - 2U].c_str());
     TEST_ASSERT_EQUAL_STRING(
         "delete_queue",
@@ -274,7 +334,9 @@ int main(int argc, char** argv)
     UNITY_BEGIN();
     RUN_TEST(TestBeginCreatesConfiguredTasksAndInitialSnapshot);
     RUN_TEST(TestRangingOrderOverwriteAndDisplayLatestSnapshot);
+    RUN_TEST(TestDiagnosticQueuePreservesSerialBoundary);
     RUN_TEST(TestQueueCreationFailureShowsPersistentDiagnostic);
+    RUN_TEST(TestDiagnosticQueueCreationFailureCleansSnapshotQueue);
     RUN_TEST(TestRangingTaskCreationFailureCleansQueue);
     RUN_TEST(TestDisplayTaskCreationFailureCleansPartialTaskAndShowsDiagnostic);
     RUN_TEST(TestEndStopsTasksBeforeDeletingQueue);

@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstring>
 
+#include "Ryuw122Initializer.h"
+
 /**
  * @brief native統合テストの疑似時刻を取得します。
  *
@@ -32,6 +34,8 @@ struct Ryuw122RangingResult
     int16_t uwbRssi = 0;
     uint32_t startedAtUs = 0;
     uint32_t completedAtUs = 0;
+    EnRyuw122RangingReason reason = EnRyuw122RangingReason::ParseError;
+    int32_t diagnosticCode = 0;
 };
 
 /**
@@ -55,6 +59,7 @@ public:
         m_result.uwbRssi = -70;
         m_result.startedAtUs = m_startedAtUs;
         m_result.completedAtUs = static_cast<uint32_t>(GetIntegrationTimeUs());
+        m_result.reason = EnRyuw122RangingReason::Success;
         m_requestPending = false;
         m_resultReady = true;
     }
@@ -95,6 +100,16 @@ public:
         result = m_result;
         m_resultReady = false;
         return true;
+    }
+
+    /**
+     * @brief 疑似UWBが新しい測距を受け付けられないか確認します。
+     *
+     * @return requestまたは結果が残っている場合はtrue
+     */
+    bool IsBusy() const
+    {
+        return m_requestPending || m_resultReady;
     }
 
     /**

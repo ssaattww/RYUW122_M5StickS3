@@ -213,6 +213,7 @@ namespace
         Ryuw122RangingResult result{};
         memcpy(result.tagAddress, tag.uwbAddress, 9);
         result.status = EnRyuw122RangingStatus::Success;
+        result.reason = EnRyuw122RangingReason::Success;
         result.distanceMm = distanceMm;
         result.uwbRssi = -60;
         result.startedAtUs = static_cast<uint32_t>(g_nowUs + 1U);
@@ -360,12 +361,22 @@ void TestOneAnchorOneTagRunsTwoRoundsContinuously()
     Ryuw122RangingResult result{};
     memcpy(result.tagAddress, nodes[0].uwbAddress, 9);
     result.status = EnRyuw122RangingStatus::Success;
+    result.reason = EnRyuw122RangingReason::Success;
     result.distanceMm = 1000;
     result.uwbRssi = -60;
     result.startedAtUs = 110;
     result.completedAtUs = 130;
     anchorRyuw.Complete(result);
     anchor.Update();
+    RangingDiagnosticEvent diagnostic{};
+    TEST_ASSERT_TRUE(anchor.TryTakeDiagnostic(diagnostic));
+    TEST_ASSERT_EQUAL_UINT8(10U, diagnostic.anchorId);
+    TEST_ASSERT_EQUAL_UINT8(1U, diagnostic.tagId);
+    TEST_ASSERT_EQUAL_STRING(nodes[0].uwbAddress, diagnostic.tagAddress);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(EnRyuw122RangingReason::Success),
+        static_cast<uint8_t>(diagnostic.reason));
+    TEST_ASSERT_EQUAL_UINT32(1000U, diagnostic.distanceMm);
     StubSentPacket measurement{};
     TEST_ASSERT_TRUE(anchorTransport.TakeSent(measurement));
     masterTransport.Inject(MakeReceived(measurement, nodes[1].macAddress));
@@ -431,6 +442,135 @@ void TestRoundCompletionWaitsForNewSynchronization()
     TEST_ASSERT_TRUE(codec.DecodeControl(nextControl.payload,
         nextControl.payloadLength, session, sequence, decoded));
     TEST_ASSERT_EQUAL_UINT32(2, decoded.roundId);
+}
+
+/**
+ * @brief timeout drain中の次roundを保留しSTART失敗と重複送信を生成しないことを確認します。
+ */
+void TestBusyDrainDefersNextRoundWithoutStartFailure()
+{
+    const NodeStatus nodes[] = {
+        MakeNode(1, EnRunMode::Tag), MakeNode(10, EnRunMode::Anchor)};
+    EspNowTransport masterTransport;
+    EspNowBroadcast masterBroadcast;
+    ConfigureBroadcast(masterBroadcast, nodes[0], nodes, 2);
+    TagMasterCoordinator masterCoordinator;
+    masterCoordinator.SetMaster(MakeMaster(nodes[0]), true);
+    NtpTimeSynchronizer masterSync;
+    masterSync.SetSynchronized(10);
+    Ryuw122Controller masterRyuw;
+    SequentialRangingProtocolCodec codec;
+    SequentialRangingController master(masterTransport, masterBroadcast,
+        masterCoordinator, masterSync, masterRyuw, codec, GetNowUs);
+
+    EspNowTransport anchorTransport;
+    EspNowBroadcast anchorBroadcast;
+    ConfigureBroadcast(anchorBroadcast, nodes[1], nodes, 2);
+    TagMasterCoordinator anchorCoordinator;
+    anchorCoordinator.SetMaster(MakeMaster(nodes[0]), false);
+    NtpTimeSynchronizer anchorSync;
+    anchorSync.SetSynchronized(10);
+    Ryuw122Controller anchorRyuw;
+    SequentialRangingController anchor(anchorTransport, anchorBroadcast,
+        anchorCoordinator, anchorSync, anchorRyuw, codec, GetNowUs);
+
+    master.Begin();
+    anchor.Begin();
+    master.Update();
+    TransferSent(masterTransport, nodes[0], anchorTransport);
+    anchor.Update();
+    TEST_ASSERT_EQUAL_UINT32(1U, anchorRyuw.StartCount());
+
+    Ryuw122RangingResult timeout{};
+    memcpy(timeout.tagAddress, nodes[0].uwbAddress, 9);
+    timeout.status = EnRyuw122RangingStatus::TimedOut;
+    timeout.reason = EnRyuw122RangingReason::Timeout;
+    timeout.startedAtUs = 100U;
+    timeout.completedAtUs = 300100U;
+    anchorRyuw.SetBusy(true);
+    anchorRyuw.Complete(timeout);
+    anchor.Update();
+    RangingDiagnosticEvent diagnostic{};
+    TEST_ASSERT_TRUE(anchor.TryTakeDiagnostic(diagnostic));
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(EnRyuw122RangingReason::Timeout),
+        static_cast<uint8_t>(diagnostic.reason));
+    TEST_ASSERT_FALSE(anchor.TryTakeDiagnostic(diagnostic));
+
+    TransferSent(anchorTransport, nodes[1], masterTransport);
+    master.Update();
+    TransferSent(masterTransport, nodes[0], anchorTransport);
+    anchor.Update();
+    TEST_ASSERT_EQUAL_UINT32(1U, anchorRyuw.StartCount());
+    TEST_ASSERT_FALSE(anchor.TryTakeDiagnostic(diagnostic));
+    StubSentPacket prematureMeasurement{};
+    TEST_ASSERT_FALSE(anchorTransport.TakeSent(prematureMeasurement));
+
+    anchor.Update();
+    TEST_ASSERT_EQUAL_UINT32(1U, anchorRyuw.StartCount());
+    anchorRyuw.SetBusy(false);
+    anchor.Update();
+    TEST_ASSERT_EQUAL_UINT32(2U, anchorRyuw.StartCount());
+    anchor.Update();
+    TEST_ASSERT_EQUAL_UINT32(2U, anchorRyuw.StartCount());
+}
+
+/**
+ * @brief session切替cycleの旧結果を破棄して新しい測距を開始できることを確認します。
+ */
+void TestSessionChangeDiscardsStaleResultBeforeNewControlStarts()
+{
+    const NodeStatus nodes[] = {
+        MakeNode(1, EnRunMode::Tag), MakeNode(10, EnRunMode::Anchor)};
+    EspNowTransport transport;
+    EspNowBroadcast broadcast;
+    ConfigureBroadcast(broadcast, nodes[1], nodes, 2);
+    TagMasterCoordinator coordinator;
+    coordinator.SetMaster(MakeMaster(nodes[0], 100U), false);
+    NtpTimeSynchronizer sync;
+    sync.SetSynchronized(10);
+    Ryuw122Controller ryuw;
+    SequentialRangingProtocolCodec codec;
+    SequentialRangingController controller(transport, broadcast, coordinator,
+        sync, ryuw, codec, GetNowUs);
+    controller.Begin();
+
+    RangeControlData control{};
+    control.roundId = 1U;
+    control.pairSequence = 1U;
+    control.masterTagId = nodes[0].nodeID;
+    memcpy(control.masterMac, nodes[0].macAddress, 6);
+    control.anchorCount = 1U;
+    control.tagCount = 1U;
+    control.anchorIndex = 0U;
+    control.anchorIds[0] = nodes[1].nodeID;
+    control.tagIds[0] = nodes[0].nodeID;
+    transport.Inject(EncodeControl(codec, 100U, 1U, control,
+        nodes[1].macAddress, nodes[0].macAddress,
+        static_cast<uint32_t>(g_nowUs)));
+    controller.Update();
+    TEST_ASSERT_EQUAL_UINT32(1U, ryuw.StartCount());
+
+    CompleteSuccess(ryuw, nodes[0], 1000U);
+    coordinator.SetMaster(MakeMaster(nodes[0], 200U), false);
+    transport.Inject(EncodeControl(codec, 200U, 1U, control,
+        nodes[1].macAddress, nodes[0].macAddress,
+        static_cast<uint32_t>(g_nowUs)));
+    controller.Update();
+    TEST_ASSERT_EQUAL_UINT32(2U, ryuw.StartCount());
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(EnSequentialRangingState::AnchorRanging),
+        static_cast<uint8_t>(controller.GetState()));
+    RangingDiagnosticEvent diagnostic{};
+    TEST_ASSERT_FALSE(controller.TryTakeDiagnostic(diagnostic));
+
+    CompleteSuccess(ryuw, nodes[0], 2000U);
+    controller.Update();
+    TEST_ASSERT_TRUE(controller.TryTakeDiagnostic(diagnostic));
+    TEST_ASSERT_EQUAL_UINT32(2000U, diagnostic.distanceMm);
+    TEST_ASSERT_EQUAL_UINT8(
+        static_cast<uint8_t>(EnSequentialRangingState::AnchorIdle),
+        static_cast<uint8_t>(controller.GetState()));
 }
 
 void TestNewRoundAcceptsControlFromChangedSourceWithLowerSequence()
@@ -994,6 +1134,8 @@ int main(int, char**)
     RUN_TEST(TestFollowerRejectsReorderedAndDuplicateRoundComplete);
     RUN_TEST(TestOneAnchorOneTagRunsTwoRoundsContinuously);
     RUN_TEST(TestRoundCompletionWaitsForNewSynchronization);
+    RUN_TEST(TestBusyDrainDefersNextRoundWithoutStartFailure);
+    RUN_TEST(TestSessionChangeDiscardsStaleResultBeforeNewControlStarts);
     RUN_TEST(TestNewRoundAcceptsControlFromChangedSourceWithLowerSequence);
     RUN_TEST(TestTwoAnchorTwoTagOrderAndAnchorForwarding);
     RUN_TEST(TestMasterPublishesEachTwoByTwoMeasurementInOrder);
