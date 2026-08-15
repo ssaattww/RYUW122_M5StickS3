@@ -4,12 +4,41 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
 
 #include "EspNowBroadcast.h"
 #include "NtpTimeSynchronizer.h"
 #include "RunMode.h"
 #include "Ryuw122Controller.h"
 #include "SequentialRangingController.h"
+
+/**
+ * @brief 低優先度の画面タスクへ渡す固定長表示snapshotを表します。
+ */
+struct SequentialRangingDisplaySnapshot
+{
+    static constexpr size_t m_maxAnchorResultCount = 8U;
+    static constexpr size_t m_visibleNodeCount = 3U;
+
+    TimedRangeMeasurement m_anchorMeasurements[m_maxAnchorResultCount]{};
+    NodeStatus m_receivedNodes[m_visibleNodeCount]{};
+    EnSequentialRangingState m_state =
+        EnSequentialRangingState::WaitingForMaster;
+    EnRyuw122InitResult m_ryuw122Result = EnRyuw122InitResult::Ok;
+    EnTimeQuality m_timeQuality = EnTimeQuality::Unsynchronized;
+    EnRunMode m_mode = EnRunMode::Anchor;
+    uint64_t m_currentMasterTimeUs = 0;
+    uint8_t m_nodeId = 0;
+    size_t m_anchorMeasurementCount = 0;
+    size_t m_receivedNodeCount = 0;
+    bool m_transportStarted = false;
+    bool m_broadcastStarted = false;
+    bool m_hasCurrentMasterTime = false;
+};
+
+static_assert(
+    std::is_trivially_copyable<SequentialRangingDisplaySnapshot>::value,
+    "Display snapshot must be queue-copyable");
 
 /**
  * @brief 逐次測距結果、ラウンド統計、受信ノード状態を画面へ表示します。
@@ -51,19 +80,28 @@ public:
     bool Update();
 
     /**
-     * @brief ステータスバーを避けて逐次測距状態と受信ノードを描画します。
+     * @brief 現在の表示modelを固定長snapshotへコピーします。
      *
-     * @param mode 現在の動作モード
+     * @param snapshot コピー先snapshot
      */
-    void Draw(EnRunMode mode);
+    void CaptureSnapshot(SequentialRangingDisplaySnapshot& snapshot) const;
+
+    /**
+     * @brief snapshotから逐次測距状態と受信ノードを描画します。
+     *
+     * @param snapshot 描画する固定長snapshot
+     */
+    void Draw(const SequentialRangingDisplaySnapshot& snapshot);
 
 private:
     static constexpr int m_statusBarHeight = 20;
     static constexpr int m_contentLeft = 4;
     static constexpr int m_firstLineY = 23;
     static constexpr int m_lineHeight = 12;
-    static constexpr size_t m_visibleNodeCount = 3U;
-    static constexpr size_t m_maxAnchorResultCount = 8U;
+    static constexpr size_t m_visibleNodeCount =
+        SequentialRangingDisplaySnapshot::m_visibleNodeCount;
+    static constexpr size_t m_maxAnchorResultCount =
+        SequentialRangingDisplaySnapshot::m_maxAnchorResultCount;
     static constexpr int m_tagResultFirstLineIndex = 2;
     static constexpr int m_receivedNodeHeaderLineIndex = 10;
     static constexpr float m_tagResultTextScaleX = 1.0F;
@@ -130,17 +168,23 @@ private:
      *
      * @return RYUW122またはESP-NOWの初期化に失敗した場合はtrue
      */
-    bool HasInitializationFailure() const;
+    static bool HasInitializationFailure(
+        const SequentialRangingDisplaySnapshot& snapshot);
 
     /**
-     * @brief 通常表示より優先して保持中の初期化失敗を描画します。
+     * @brief 通常表示より優先してsnapshotの初期化失敗を描画します。
+     *
+     * @param snapshot 描画する固定長snapshot
      */
-    void DrawInitializationFailure();
+    void DrawInitializationFailure(
+        const SequentialRangingDisplaySnapshot& snapshot);
 
     /**
      * @brief 自TAGに対するANCHOR別最新測距結果と現在のマスター時刻を描画します。
+     *
+     * @param snapshot 描画する固定長snapshot
      */
-    void DrawTagResults();
+    void DrawTagResults(const SequentialRangingDisplaySnapshot& snapshot);
 
     /**
      * @brief 自TAG向け測距結果をANCHOR ID昇順の固定長一覧へ保存します。
@@ -163,9 +207,11 @@ private:
     bool UpdateCurrentMasterTime();
 
     /**
-     * @brief 受信ノード一覧のヘッダーと先頭3件を描画します。
+     * @brief snapshotの受信ノード一覧のヘッダーと先頭3件を描画します。
+     *
+     * @param snapshot 描画する固定長snapshot
      */
-    void DrawReceivedNodes();
+    void DrawReceivedNodes(const SequentialRangingDisplaySnapshot& snapshot);
 
     SequentialRangingController& m_controller;
     EspNowBroadcast& m_broadcast;

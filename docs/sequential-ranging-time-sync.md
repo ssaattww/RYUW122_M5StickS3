@@ -82,6 +82,9 @@ ESP-NOWの受信処理はプロジェクト側の`EspNowTransport`へ集約す�
 `EspNowTransport`はESP-IDFの`esp_now_recv_info_t`を直接受け取り、受信コールバック内では固定長データのコピーとキュー投入だけを行う。
 時刻同期、UWB測距、パケット解析、画面描画は受信コールバック内で行わない。
 
+通常運転中の通信、時刻同期、UWB測距、逐次測距、表示model更新は高優先度FreeRTOSタスクへ集約する。
+M5入力、Canvas描画、sprite転送は低優先度FreeRTOSタスクだけが行い、画面転送中も高優先度タスクを継続できる構成とする。
+
 ノード状態のブロードキャストと順次測距は同じESP-NOWインスタンスを共有する。
 ESP-NOWの受信コールバックを複数のクラスが個別登録してはならない。
 
@@ -275,6 +278,8 @@ TAG側とANCHOR側の順次測距状態機械を担当する。
 | `include/Ryuw122Controller.h` | `src/Ryuw122Controller.cpp` | 初期化後の非同期UWB測距 |
 | `include/SequentialRangingController.h` | `src/SequentialRangingController.cpp` | 二重ループ測距と逐次結果公開 |
 | `include/SequentialRangingProtocolCodec.h` | `src/SequentialRangingProtocolCodec.cpp` | `SequentialRangingProtocolCodec`によるwire packetのencode、decode、検証 |
+| `include/SequentialRangingDisplay.h` | `src/SequentialRangingDisplay.cpp` | 表示model、固定長snapshot、snapshot描画 |
+| `include/RangingDisplayTaskController.h` | `src/RangingDisplayTaskController.cpp` | 測距更新タスクと画面タスクの実行、task間queue |
 
 ## 6. ESP-NOW受信情報
 
@@ -1081,26 +1086,34 @@ Wi-Fi省電力が有効な場合、NTP計算自体が成功しても`PowerSaveEn
 
 `main.cpp`が行う処理を次に限定する。
 
-- NVSと`ConfigRuntime`の初期化
-- `EspNowTransport`の生成と開始
-- `EspNowBroadcast`の生成と更新
-- `TagMasterCoordinator`の生成と更新
-- `Ryuw122Controller`の生成と開始
-- `NtpTimeSynchronizer`の生成
-- `SequentialRangingController`の生成と更新
-- 逐次測距結果とラウンド完了情報の取得
-- 画面表示
+- 依存クラスの生成
+- M5、Canvas、Serial、NVS、`ConfigRuntime`の起動時初期化
+- ESP-NOW、NodeStatus broadcast、RYUW122、逐次測距の開始
+- NT-Shellと`RangingDisplayTaskController`の開始
+- task開始失敗時の永続画面診断
+- Arduino loop taskから定期的に実行権を譲る処理
 
-NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーンを`main.cpp`へ記述しない。
+NTP計算、パケット解析、ANCHOR順序決定、UWB測距チェーン、通常運転中の画面描画を`main.cpp`へ記述しない。
 
+`RangingDisplayTaskController`の高優先度タスクはcore 1、優先度4で通信、同期、UWB、逐次測距、表示model更新を順番に実行する。
+低優先度画面タスクはcore 0、優先度1でM5入力、Canvas描画、sprite転送を実行する。
+NT-Shellは既存の独立threadとし、測距タスクより低い優先度で動作する。
 画面描画やNT-Shell処理により、次測距または次ラウンド開始が遅延してはならない。
-マスターTAGは逐次結果を内部FIFOへ保存し、必要な次測距制御を送信キューへ入れた後、画面描画を行う。
+
+高優先度タスクから低優先度タスクへは容量1の固定長`SequentialRangingDisplaySnapshot` queueだけを渡す。
+新しいsnapshotは古い未描画snapshotを上書きし、画面遅延を測距側へ返さない。
+低優先度タスクはcontroller、broadcast、NTP、RYUW122、`ConfigRuntime`を直接参照しない。
+本体ボタンによるruntime mode変更は行わない。
+modeはNVSの`run_mode`を設定して再起動したときだけRYUW122のrole・UWB addressと全protocol状態へ反映する。
+停止時は両タスクを停止してからsnapshot queueを解放し、実行中タスクが解放済みqueueへ触れない順序とする。
+queueまたはtask作成に失敗した場合は部分生成したtaskとqueueを同じ順序で破棄し、`main.cpp`が`Begin()`失敗を判定して`TASK START FAILED`を画面へ永続表示する。
 
 ## 19. 実装同期状況
 
 ### 19.1 実装済みのgateと更新順
 
-`loop()`は`EspNowTransport`、`EspNowBroadcast`、`TagMasterCoordinator`、`NtpTimeSynchronizer`、`Ryuw122Controller`、`SequentialRangingController`、`SequentialRangingDisplay`の順に更新し、末尾の`delay(1)`で実行権を譲る。
+高優先度測距タスクは`EspNowTransport`、`EspNowBroadcast`、`TagMasterCoordinator`、`NtpTimeSynchronizer`、`Ryuw122Controller`、`SequentialRangingController`、`SequentialRangingDisplay`の順に更新し、末尾の1 tick待機で実行権を譲る。
+Arduinoの`loop()`はこれらを更新せず、専用タスクへ実行権を渡す。
 50msなどの測距slot待ちは設けていない。
 
 マスターTAGは全非マスターノードのNTP処理が完了するまで`WaitingForSynchronization`に留まる。
@@ -1125,6 +1138,7 @@ round timeoutは`ANCHOR数 * TAG数 * 300ms + ANCHOR数 * 50ms + 50ms`で計算�
 | `SequentialRangingController` | 測距結果などの低優先度送信 | 80件 |
 | `SequentialRangingController` | アプリケーション向け逐次結果 | 64件 |
 | `SequentialRangingController` | round summary | 4件 |
+| `RangingDisplayTaskController` | 最新表示snapshot | 1件、上書き |
 
 容量超過や送信失敗は診断件数へ記録する。
 初期実装の画面はqueue診断件数を表示しない。
@@ -1149,8 +1163,13 @@ TAG画面はこの現在値をマスター基準秒の下6桁として`NOW`行�
 ANCHORではTAG専用の現在時刻とANCHOR別結果一覧を表示しない。
 round summaryはcontroller FIFOから取り出すが、8 ANCHOR結果を優先するため画面には表示しない。
 
-表示判断、固定長一覧保持、単位変換、描画は`SequentialRangingDisplay`へ集約する。
-`main.cpp`は既存`NtpTimeSynchronizer`を表示クラスのconstructorへ渡すcompositionだけを追加し、時刻計算、結果保持、描画を行わない。
+表示判断、固定長一覧保持、単位変換、snapshot生成、snapshot描画は`SequentialRangingDisplay`へ集約する。
+表示eventとNodeStatusの取り込みは高優先度タスク上だけで実行し、低優先度タスクは固定長snapshotだけを描画する。
+このためCanvas描画中にcontrollerのmeasurement・round FIFO、broadcastのNodeStatus通知、NTP状態を読み書きしない。
+`AnchorRanging`終了は高優先度タスクがRYUW122結果を取り込んだ同じ更新cycleで`AnchorIdle`へ遷移し、最新snapshotを上書き通知する。
+低優先度画面タスクは描画完了後に最新snapshotを取得して再描画するため、`RANGE`を実際の測距状態より必要以上に保持しない。
+実測距の300ms timeoutは変更しない。
+`main.cpp`は表示クラスとtask controllerのcompositionだけを行い、時刻計算、結果保持、通常運転中の描画を行わない。
 M5StickS3の135×240 pixel画面では、状態をY=23、現在時刻をY=35、最大8 ANCHOR結果をY=47から131、NodeStatus headerをY=143、3件をY=155、167、179へ配置する。
 ANCHOR結果行は通常文字倍率とし、最大ANCHOR ID、`TIMEOUT`、最大距離単位、6桁秒を既存の135 pixel幅へ収める。
 RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗は通常表示より優先して保持表示する。
@@ -1228,6 +1247,11 @@ EKF、座標計算、アプリケーションACK、複雑な再送、輻輳制�
 - フォロワーTAGへの逐次転送
 - 最大パケットサイズが250バイト以内
 - Wi-Fi省電力設定の既定値がOFF
+- 取得済み表示snapshotが後続の測距model更新から独立して描画できること
+- ANCHORの`AnchorRanging`と`AnchorIdle`を異なるsnapshotとして描画できること
+- taskのpriority、core、更新順、snapshot上書きと最新snapshot描画
+- queue・各task作成失敗時のrollbackと永続診断
+- 停止時に画面task、測距task、snapshot queueの順で解放すること
 
 ### 21.2 ビルド検証
 
@@ -1239,6 +1263,8 @@ M5StickS3環境でclean buildを行う。
 - `TagMasterCoordinator.cpp`
 - `NtpTimeSynchronizer.cpp`
 - `SequentialRangingController.cpp`
+- `SequentialRangingDisplay.cpp`
+- `RangingDisplayTaskController.cpp`
 - `Ryuw122Controller.cpp`
 - `ConfigPreference.cpp`
 - `ConfigRuntime.cpp`

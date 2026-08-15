@@ -21,6 +21,18 @@ namespace
     }
 
     /**
+     * @brief 現在の表示modelをsnapshot化して描画します。
+     *
+     * @param display 描画する表示管理
+     */
+    void DrawCurrent(SequentialRangingDisplay& display)
+    {
+        SequentialRangingDisplaySnapshot snapshot{};
+        display.CaptureSnapshot(snapshot);
+        display.Draw(snapshot);
+    }
+
+    /**
      * @brief test用自ノード状態を設定します。
      *
      * @param broadcast 設定対象broadcast
@@ -150,7 +162,7 @@ void TestEmptyQueuesDoNotRequestDraw()
     SetHealthy(display);
 
     TEST_ASSERT_FALSE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_EQUAL_STRING("NOW UNSYNC", canvas.GetTextAtY(35));
 }
 
@@ -180,7 +192,7 @@ void TestBurstKeepsLatestPerAnchorInIdOrder()
     TEST_ASSERT_TRUE(display.Update());
     TEST_ASSERT_EQUAL_UINT32(0, controller.MeasurementRemaining());
     TEST_ASSERT_EQUAL_UINT32(0, controller.SummaryRemaining());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_EQUAL_STRING(
         "A1 999mm@000104s",
         canvas.GetTextAtY(47));
@@ -216,7 +228,7 @@ void TestMasterTagFiltersMeasurementsForOtherTags()
     controller.PushMeasurement(MakeMeasurement(5, 3, 555, 203));
 
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
 
     TEST_ASSERT_NOT_NULL(strstr(canvas.GetTextAtY(23), "M RUN"));
     TEST_ASSERT_EQUAL_STRING(
@@ -248,7 +260,7 @@ void TestFollowerTagDrawsForwardedMeasurementAndCurrentTime()
     controller.PushMeasurement(MakeMeasurement(6, 2, 600, 1234500));
 
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
 
     TEST_ASSERT_NOT_NULL(strstr(canvas.GetTextAtY(23), "F FOLLOW"));
     TEST_ASSERT_EQUAL_STRING("NOW 234567s", canvas.GetTextAtY(35));
@@ -296,7 +308,7 @@ void TestMeasurementTimeValidityAndZeroValue()
         EnTimeQuality::Unsynchronized));
 
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
 
     TEST_ASSERT_EQUAL_STRING(
         "A1 1mm@000000s",
@@ -335,7 +347,7 @@ void TestMasterTimeModuloBoundaryIsShared()
         2, 2, 2, uint64_t{1000000}));
 
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
 
     TEST_ASSERT_EQUAL_STRING("NOW 000000s", canvas.GetTextAtY(35));
     TEST_ASSERT_EQUAL_STRING(
@@ -370,7 +382,7 @@ void TestMaximumTimeoutLineFitsWidth()
         EnRangeResultStatus::TimedOut));
 
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
 
     TEST_ASSERT_EQUAL_STRING(
         "A255 TIMEOUT@999999s",
@@ -402,13 +414,13 @@ void TestCurrentMasterTimeRefreshesOncePerSecond()
     TEST_ASSERT_FALSE(display.Update());
     timeSynchronizer.SetCurrentMasterTime(2000000U);
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_EQUAL_STRING("NOW 000002s", canvas.GetTextAtY(35));
 
     timeSynchronizer.ClearCurrentMasterTime();
     TEST_ASSERT_TRUE(display.Update());
     TEST_ASSERT_FALSE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_EQUAL_STRING("NOW UNSYNC", canvas.GetTextAtY(35));
 }
 
@@ -455,7 +467,7 @@ void TestEightAnchorResultsAndThreeNodesFitScreen()
     broadcast.Inject(MakeNodeStatus(4, EnRunMode::Anchor));
 
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
 
     TEST_ASSERT_EQUAL_STRING("NOW 999999s", canvas.GetTextAtY(35));
     TEST_ASSERT_EQUAL_STRING(
@@ -523,7 +535,7 @@ void TestAnchorOmitsTagResultsAndCurrentTime()
     broadcast.Inject(MakeNodeStatus(9, EnRunMode::Anchor));
 
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Anchor);
+    DrawCurrent(display);
 
     TEST_ASSERT_NOT_NULL(strstr(canvas.GetTextAtY(23), "A RANGE Q:UNSYNC"));
     TEST_ASSERT_FALSE(canvas.Contains("NOW"));
@@ -552,30 +564,30 @@ void TestInitializationFailuresRemainVisible()
         EnRyuw122InitResult::CommunicationFailed,
         true,
         true);
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_TRUE(canvas.Contains("RYUW122: CommunicationFailed"));
 
     const NodeStatus status = MakeNodeStatus(7, EnRunMode::Tag);
     broadcast.Inject(status);
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_TRUE(canvas.Contains("RYUW122: CommunicationFailed"));
     TEST_ASSERT_FALSE(canvas.Contains("SEQ"));
 
     display.SetInitializationHealth(EnRyuw122InitResult::Ok, false, false);
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_TRUE(canvas.Contains("ESP-NOW transport failed"));
     controller.SetState(EnSequentialRangingState::ReadyToStart);
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_TRUE(canvas.Contains("ESP-NOW transport failed"));
 
     display.SetInitializationHealth(EnRyuw122InitResult::Ok, true, false);
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_TRUE(canvas.Contains("ESP-NOW broadcast failed"));
     broadcast.Inject(status);
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Anchor);
+    DrawCurrent(display);
     TEST_ASSERT_TRUE(canvas.Contains("ESP-NOW broadcast failed"));
 }
 
@@ -600,7 +612,7 @@ void TestMasterResetGenerationClearsAnchorResults()
     controller.PushMeasurement(MakeMeasurement(1, 2, 100, 1));
     controller.PushMeasurement(MakeMeasurement(2, 2, 200, 2));
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_TRUE(canvas.Contains("A1 100mm"));
     TEST_ASSERT_TRUE(canvas.Contains("A2 200mm"));
     TEST_ASSERT_TRUE(canvas.Contains("Q:SYNC"));
@@ -608,13 +620,46 @@ void TestMasterResetGenerationClearsAnchorResults()
     controller.SetState(EnSequentialRangingState::FollowingMaster);
     controller.AdvanceResetGeneration();
     TEST_ASSERT_TRUE(display.Update());
-    display.Draw(EnRunMode::Tag);
+    DrawCurrent(display);
     TEST_ASSERT_NOT_NULL(strstr(
         canvas.GetTextAtY(23),
         "F FOLLOW Q:UNSYNC"));
     TEST_ASSERT_EQUAL_STRING("", canvas.GetTextAtY(47));
     TEST_ASSERT_EQUAL_STRING("", canvas.GetTextAtY(59));
     TEST_ASSERT_EQUAL_STRING("NOW 000001s", canvas.GetTextAtY(35));
+}
+
+/**
+ * @brief 取得済みsnapshotが後続の測距model更新から独立して描画できることを確認します。
+ */
+void TestCapturedSnapshotIsIndependentFromLaterRangingUpdates()
+{
+    SequentialRangingController controller;
+    EspNowBroadcast broadcast;
+    NtpTimeSynchronizer timeSynchronizer;
+    M5Canvas canvas;
+    SetLocalNode(broadcast, 2, EnRunMode::Anchor);
+    SequentialRangingDisplay display(
+        controller,
+        broadcast,
+        timeSynchronizer,
+        canvas);
+    SetHealthy(display);
+
+    controller.SetState(EnSequentialRangingState::AnchorRanging);
+    TEST_ASSERT_TRUE(display.Update());
+    SequentialRangingDisplaySnapshot rangingSnapshot{};
+    display.CaptureSnapshot(rangingSnapshot);
+
+    controller.SetState(EnSequentialRangingState::AnchorIdle);
+    TEST_ASSERT_TRUE(display.Update());
+    SequentialRangingDisplaySnapshot idleSnapshot{};
+    display.CaptureSnapshot(idleSnapshot);
+
+    display.Draw(rangingSnapshot);
+    TEST_ASSERT_NOT_NULL(strstr(canvas.GetTextAtY(23), "A RANGE"));
+    display.Draw(idleSnapshot);
+    TEST_ASSERT_NOT_NULL(strstr(canvas.GetTextAtY(23), "A IDLE"));
 }
 
 /**
@@ -641,5 +686,6 @@ int main(int argc, char** argv)
     RUN_TEST(TestAnchorOmitsTagResultsAndCurrentTime);
     RUN_TEST(TestInitializationFailuresRemainVisible);
     RUN_TEST(TestMasterResetGenerationClearsAnchorResults);
+    RUN_TEST(TestCapturedSnapshotIsIndependentFromLaterRangingUpdates);
     return UNITY_END();
 }

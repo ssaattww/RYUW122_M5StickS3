@@ -14,9 +14,12 @@ M5Stack系へ移植する場合はM5Unifiedの共通APIを維持しつつ、boar
 4. `NtpTimeSynchronizer`がmaster基準時刻へ同期し、現在のmaster基準時刻を提供する。
 5. `Ryuw122Controller`がUART経由の非同期UWB測距を管理する。
 6. `SequentialRangingProtocolCodec`と`SequentialRangingController`が順序、wire形式、逐次公開を管理する。
-7. `SequentialRangingDisplay`が最新結果とhealthをM5画面へ表示する。
+7. `SequentialRangingDisplay`が最新結果とhealthを固定長snapshot化してM5画面へ表示する。
+8. `RangingDisplayTaskController`が測距更新と画面描画を優先度の異なるFreeRTOSタスクへ分離する。
 
-`main.cpp`は各クラスの生成、初期化、順番どおりの更新、画面反映に限定する。
+`main.cpp`は各クラスの生成、起動時初期化、専用タスクの開始に限定する。
+通常運転中のESP-NOW、マスター選出、NTP、RYUW122、逐次測距、表示model更新はcore 1・優先度4の高優先度タスクが所有する。
+M5入力、Canvas描画、sprite転送はcore 0・優先度1の低優先度タスクが所有する。
 
 ## ノードroleと通信
 
@@ -78,6 +81,10 @@ master TAGが収集した他TAG向け結果は一覧へ入れず、follower TAG�
 時刻品質が`Synchronized`、`PowerSaveEnabled`、`ReceiveTimestampUnavailable`なら0秒を含め有効とし、`SynchronizationExpired`、`Unsynchronized`、未知値では`@UNSYNC`を表示する。
 ANCHORではTAG専用の現在時刻と距離一覧を表示しない。
 表示eventの取り込み、固定長一覧保持、TAGとANCHORの表示判断、描画は`SequentialRangingDisplay`へ集約する。
+高優先度タスクは容量1の固定長snapshot queueを上書きし、低優先度タスクはcontroller、broadcast、NTPのFIFOへ直接触れずに最新snapshotだけを描画する。
+画面転送中も高優先度測距タスクは継続し、ANCHORの測距完了時は`AnchorIdle`を含む最新状態を次のsnapshotへ反映する。
+この表示分離はRYUW122の300ms timeoutを変更しない。
+taskまたはsnapshot queueの作成に失敗した場合は部分生成物を破棄し、`TASK START FAILED`をM5画面へ永続表示する。
 M5StickS3の135×240 pixel画面では、現在時刻をY座標35、最大8 ANCHOR結果をY座標47から131、受信ノード3件をY座標155、167、179へ描画する。
 ANCHOR結果行は通常文字倍率で、最大ID・距離・status・6桁秒を135 pixel幅内へ収める。
 
@@ -100,7 +107,8 @@ USB SerialとNT-Shellは115200bpsで動作する。
 
 設定は起動時に`ConfigRuntime`へ読み込む。
 NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映するため再起動する。
-本体ボタンAのmode切替は現在の実行時値だけを変更し、NVSへ保存しない。
+本体ボタンによるruntime mode切替は行わない。
+modeを変更する場合はNVSの`run_mode`を設定して再起動し、RYUW122のrole・UWB addressとprotocol状態を起動時に一貫して初期化する。
 
 ## 主な公開クラスとファイル
 
@@ -118,6 +126,7 @@ NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映�
 | `SequentialRangingProtocolCodec` | `include/SequentialRangingProtocolCodec.h` | 測距packetの固定wire codec |
 | `SequentialRangingController` | `include/SequentialRangingController.h` | 二重loop、逐次event、round summary |
 | `SequentialRangingDisplay` | `include/SequentialRangingDisplay.h` | M5画面表示 |
+| `RangingDisplayTaskController` | `include/RangingDisplayTaskController.h` | 高優先度測距更新、低優先度画面転送、固定長snapshot同期 |
 
 ## 使い方の概要
 
@@ -130,10 +139,12 @@ NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映�
 ## テスト、build、保留事項
 
 PlatformIO native環境はT-003からT-009を分離しており、T-009はproductionの選出、NTP、protocol codec、逐次測距controllerを1つのtest binaryへ直接結合する。
+`native_t008`は表示回帰に加えて、取得済みsnapshotが後続の測距状態変更から独立し、ANCHORの`RANGE`から`IDLE`への遷移を別snapshotで描画できることを検証する。
+`native_t015`はproductionの`RangingDisplayTaskController.cpp`をFreeRTOS・M5・依存stubと直接結合し、task設定、更新順、snapshot上書き、画面転送、作成失敗rollback、永続診断、停止順を検証する。
 3 ANCHOR×2 TAGの順序、逐次公開、時刻変換、round完了、基本timeout、master変更reset、再同期をhost上で検証する。
 M5StickS3は`m5stack-sticks3`環境でclean/full buildする。
-T-014実装時点でnative testは89件すべて成功し、M5StickS3 clean/full buildも成功している。
-full buildの使用量はRAM 68,760 / 327,680バイト、Flash 1,234,979 / 3,342,336バイトである。
+T-015通常レビュー修正時点でnative testは96件すべて成功し、M5StickS3 clean/full buildも成功している。
+full buildの使用量はRAM 68,808 / 327,680バイト、Flash 1,236,167 / 3,342,336バイトである。
 
 EKFと座標計算は未実装であり、逐次結果を将来の非同期観測入力として利用する前提である。
 アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧は未実装である。

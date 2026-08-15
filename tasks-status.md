@@ -19,7 +19,7 @@
 ## 現在位置
 
 - 現在フェーズ: なし
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013, T-014
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011, T-012, T-013, T-014, T-015
 - 次タスク: なし
 - 次タスク状態: 全タスク完了
 - ブランチ: `codex/display-three-nodes-tag-results`
@@ -42,6 +42,7 @@
 | T-012 | P8 | 計測開始シーケンスと実装範囲の明文化 | S | T-011 | 完了 | 本タスクのコミット |
 | T-013 | P9 | 接続先3件とTAG全ANCHOR測距結果・統一時刻の画面表示 | M | T-012 | 完了 | 本タスクのコミット |
 | T-014 | P10 | NTP時計基準統一と定期再同期 | M | T-004, T-013 | 完了 | 本タスクのコミット |
+| T-015 | P11 | 測距処理と画面描画のFreeRTOSタスク分離 | L | T-014 | 完了 | 本タスクのコミット |
 
 ## タスク詳細
 
@@ -587,6 +588,55 @@
 - focused native test 21/21、全native test 89/89、native_t009 10/10、M5StickS3 clean/full build、`git diff --check`が成功した。
 - M5StickS3 build使用量はRAM 68,760 / 327,680バイト、Flash 1,234,979 / 3,342,336バイトである。
 - ユーザー指示により通常レビューと独立レビューは実施していない。
+
+### T-015 測距処理と画面描画のFreeRTOSタスク分離
+
+変更対象:
+
+- `src/main.cpp`
+- 必要なタスク実行・表示同期クラス
+- `include/SequentialRangingDisplay.h`
+- `src/SequentialRangingDisplay.cpp`
+- 関連ホストテスト
+- `docs/sequential-ranging-time-sync.md`
+- `docs/feature-list.md`
+
+実施内容:
+
+- ESP-NOW、時刻同期、RYUW122、逐次測距を高優先度のFreeRTOSタスクへ分離する。
+- 画面描画とsprite転送を低優先度タスクへ分離し、測距処理を待たせない。
+- 測距結果の取り込みと描画用状態の共有を競合なく行う。
+- ANCHORの`RANGE`表示が実際の測距状態を越えて残らないようにする。
+- `main.cpp`を初期化とタスクcompositionに限定する。
+
+完了条件:
+
+- 画面描画中も測距更新タスクが継続できる。
+- 測距タスクの優先度が画面タスクより高い。
+- 共有表示状態にデータ競合がない。
+- ANCHORの`RANGE`表示が測距完了後に解除される。
+- 全追加・変更関数へ日本語Doxygenがある。
+- focused native test、全native test、M5StickS3 clean/full buildが成功する。
+- 通常レビューで必須修正findingが解消される。
+
+通常レビューfinding:
+
+- T015-NR-001 Medium: taskまたはqueue生成失敗時に安全に解放し、永続エラーを表示する。
+- T015-NR-002 Medium: 不完全な実行中mode切替を削除し、NVS設定後の再起動契約へ統一する。
+- T015-NR-003 Medium: production task controllerを直接compile・実行するhost testを追加する。
+- T015-NR-004 Low: P10とP11の追跡文言を正しい節へ配置する。
+
+結果:
+
+- `RangingDisplayTaskController`を追加し、通信・同期・UWB・逐次測距をcore 1・優先度4、M5入力・描画・sprite転送をcore 0・優先度1へ分離した。
+- 容量1の固定長snapshot queueにより、低優先度画面taskがprotocol所有objectへ直接アクセスしない構成にした。
+- ANCHORの`RANGE`から`IDLE`へのsnapshot更新をhost testで確認した。
+- task開始失敗時は部分生成済みresourceを解放し、`TASK START FAILED`を永続表示する。
+- runtime mode切替を廃止し、NT-ShellでNVSを変更して再起動したときだけ反映する契約へ統一した。
+- T015-NR-001からT015-NR-004はすべてresolved、fix verificationは`pass_with_held`、新規findingとunexploredはない。
+- focused test 19/19、全native test 96/96、M5StickS3 clean/full build、`git diff --check`が成功した。
+- M5StickS3 build使用量はRAM 68,808 / 327,680 bytes、Flash 1,236,167 / 3,342,336 bytesである。
+- 実機のtask scheduling、sprite転送中の測距継続、`RANGE`解除体感、stack余裕、Wi-Fi/UWB実通信は保留する。
 
 ## 実機保留項目
 

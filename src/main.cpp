@@ -10,6 +10,7 @@
 #include "EspNowTransport.h"
 #include "NvsPreferenceStore.h"
 #include "NtpTimeSynchronizer.h"
+#include "RangingDisplayTaskController.h"
 #include "Ryuw122Controller.h"
 #include "SequentialRangingController.h"
 #include "SequentialRangingDisplay.h"
@@ -48,53 +49,16 @@ namespace
         espNowBroadcast,
         ntpTimeSynchronizer,
         canvas);
-
-    constexpr int StatusBarHeight = 20;
-
-    /**
-     * @brief ノードID、動作モード、バッテリー残量をステータスバーへ描画します。
-     *
-     * @param mode 表示する動作モード
-     * @param nodeId 表示するノードID
-     */
-    void DrawStatus(EnRunMode mode, uint8_t nodeId)
-    {
-        // 背景
-        canvas.fillRect(
-            0,
-            0,
-            canvas.width(),
-            StatusBarHeight,
-            TFT_DARKGREY);
-
-        canvas.setTextColor(TFT_WHITE);
-        canvas.setTextSize(1);
-
-        // 左側: Node ID / Mode
-        char statusText[20];
-        snprintf(
-            statusText,
-            sizeof(statusText),
-            "ID:%u %s",
-            nodeId,
-            ConfigPreference::GetModeName(mode));
-        canvas.setCursor(4, 6);
-        canvas.print(statusText);
-
-        // 右側: Battery
-        int battery = M5.Power.getBatteryLevel();
-
-        char text[8];
-        snprintf(text, sizeof(text), "%d%%", battery);
-
-        int textWidth = canvas.textWidth(text);
-
-        canvas.setCursor(
-            canvas.width() - textWidth - 4,
-            6);
-
-        canvas.print(text);
-    }
+    RangingDisplayTaskController rangingDisplayTaskController(
+        espNowTransport,
+        espNowReceiveQueueTerminator,
+        espNowBroadcast,
+        tagMasterCoordinator,
+        ntpTimeSynchronizer,
+        ryuw122Controller,
+        sequentialRangingController,
+        sequentialRangingDisplay,
+        canvas);
 
 };
 
@@ -135,58 +99,19 @@ void setup()
         ryuw122Result,
         transportStarted,
         broadcastStarted);
-    sequentialRangingDisplay.Update();
-
-    canvas.fillSprite(TFT_BLACK);
-    DrawStatus(
-        configRuntime.GetRunMode(),
-        configRuntime.GetCurrentNodeID());
-    sequentialRangingDisplay.Draw(configRuntime.GetRunMode());
-    canvas.pushSprite(0, 0);
 
     ntShell.RegisterCommands(preferenceCommands.GetCommands());
     ntShell.Start();
-
+    if (!rangingDisplayTaskController.Begin())
+    {
+        rangingDisplayTaskController.ShowTaskStartFailure();
+    }
 }
 
 /**
- * @brief 入力、通信、同期、UWB測距、逐次測距、画面を順番に更新します。
+ * @brief FreeRTOSの専用タスクへ実行権を渡します。
  */
 void loop()
 {
-    M5.update();
-    bool canvasChanged = false;
-    if (M5.BtnA.isPressed())
-    {
-        EnRunMode runmode = configRuntime.GetRunMode();
-        EnRunMode nextMode = (runmode == EnRunMode::Tag) ? EnRunMode::Anchor : EnRunMode::Tag;
-        configRuntime.SetRunMode(nextMode);
-        DrawStatus(
-            nextMode,
-            configRuntime.GetCurrentNodeID());
-        canvasChanged = true;
-    }
-
-    espNowTransport.Update();
-    // transport更新後の削除件数を既知consumer処理前に固定する。
-    espNowReceiveQueueTerminator.BeginCycle();
-    espNowBroadcast.Update();
-    tagMasterCoordinator.Update(millis());
-    ntpTimeSynchronizer.Update();
-    ryuw122Controller.Update();
-    sequentialRangingController.Update();
-    // 既知consumerがFIFOを進めなかったcycleだけ未所有packetを1件破棄する。
-    espNowReceiveQueueTerminator.Update();
-    canvasChanged = sequentialRangingDisplay.Update() || canvasChanged;
-
-    if (canvasChanged)
-    {
-        DrawStatus(
-            configRuntime.GetRunMode(),
-            configRuntime.GetCurrentNodeID());
-        sequentialRangingDisplay.Draw(configRuntime.GetRunMode());
-        canvas.pushSprite(0, 0);
-    }
-
-    delay(1);
+    vTaskDelay(pdMS_TO_TICKS(1000U));
 }
