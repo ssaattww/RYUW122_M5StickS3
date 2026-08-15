@@ -33,6 +33,7 @@ public:
     static uint8_t m_lastTxPin;
     static uint8_t m_lastRxPin;
     static RYUW122BaudRate m_lastBaudRate;
+    static std::deque<bool> m_testResults;
 
     /**
      * @brief pinとbaud rateの構築契約を記録します。
@@ -61,6 +62,8 @@ public:
      */
     bool begin()
     {
+        hardwareEvents.push_back(
+            {EnTestHardwareEvent::UartBegin, 0, 0});
         return true;
     }
 
@@ -71,7 +74,32 @@ public:
      */
     bool test()
     {
-        return true;
+        hardwareEvents.push_back({EnTestHardwareEvent::Test, 0, 0});
+        if (m_testResults.empty())
+        {
+            return true;
+        }
+        const bool result = m_testResults.front();
+        m_testResults.pop_front();
+        return result;
+    }
+
+    /**
+     * @brief test用AT疎通結果を到着順で追加します。
+     *
+     * @param result 追加する疎通結果
+     */
+    static void QueueTestResult(bool result)
+    {
+        m_testResults.push_back(result);
+    }
+
+    /**
+     * @brief test用AT疎通結果queueを初期状態へ戻します。
+     */
+    static void ResetTestResults()
+    {
+        m_testResults.clear();
     }
 
     /**

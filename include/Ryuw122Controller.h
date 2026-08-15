@@ -1,35 +1,11 @@
 #pragma once
 
+#include "Ryuw122Initializer.h"
+
 #include <cstdint>
 
 class ConfigRuntime;
 class HardwareSerial;
-
-/**
- * @brief RYUW122の初期化結果を表します。
- */
-enum class EnRyuw122InitResult : uint8_t
-{
-    Ok,
-    SerialBeginFailed,
-    CommunicationFailed,
-    ModeReadFailed,
-    ModeWriteFailed,
-    NetworkIdReadFailed,
-    NetworkIdWriteFailed,
-    AddressReadFailed,
-    AddressWriteFailed,
-};
-
-/**
- * @brief RYUW122 portが扱う動作モードを表します。
- */
-enum class EnRyuw122PortMode : uint8_t
-{
-    Tag,
-    Anchor,
-    Unknown,
-};
 
 /**
  * @brief 非同期測距の完了状態を表します。
@@ -39,17 +15,6 @@ enum class EnRyuw122RangingStatus : uint8_t
     Success,
     Failed,
     TimedOut,
-};
-
-/**
- * @brief RYUW122 portが受信した測距応答を保持します。
- */
-struct Ryuw122PortResponse
-{
-    char tagAddress[9] = {};
-    bool isSuccess = false;
-    int32_t distanceCm = 0;
-    int16_t uwbRssi = 0;
 };
 
 /**
@@ -71,101 +36,7 @@ struct Ryuw122RangingResult
 using Ryuw122TimeProvider = uint32_t (*)();
 
 /**
- * @brief RYUW122の初期化と非同期UART入出力を抽象化します。
- */
-class IRyuw122Port
-{
-public:
-    /**
-     * @brief RYUW122 portを破棄します。
-     */
-    virtual ~IRyuw122Port() = default;
-
-    /**
-     * @brief UARTとRYUW122を初期化します。
-     *
-     * @return 初期化できた場合はtrue、それ以外はfalse
-     */
-    virtual bool Begin() = 0;
-
-    /**
-     * @brief RYUW122とのAT通信を確認します。
-     *
-     * @return 応答を確認できた場合はtrue、それ以外はfalse
-     */
-    virtual bool Test() = 0;
-
-    /**
-     * @brief 現在のRYUW122動作モードを取得します。
-     *
-     * @return 現在の動作モード
-     */
-    virtual EnRyuw122PortMode GetMode() = 0;
-
-    /**
-     * @brief RYUW122動作モードを設定します。
-     *
-     * @param mode 設定する動作モード
-     * @return 設定できた場合はtrue、それ以外はfalse
-     */
-    virtual bool SetMode(EnRyuw122PortMode mode) = 0;
-
-    /**
-     * @brief 現在のネットワークIDを取得します。
-     *
-     * @param networkId 取得した8文字のIDを格納する9バイト以上の領域
-     * @return 取得できた場合はtrue、それ以外はfalse
-     */
-    virtual bool GetNetworkId(char* networkId) = 0;
-
-    /**
-     * @brief ネットワークIDを設定します。
-     *
-     * @param networkId 設定する8文字のID
-     * @return 設定できた場合はtrue、それ以外はfalse
-     */
-    virtual bool SetNetworkId(const char* networkId) = 0;
-
-    /**
-     * @brief 現在の端末アドレスを取得します。
-     *
-     * @param address 取得した8文字のアドレスを格納する9バイト以上の領域
-     * @return 取得できた場合はtrue、それ以外はfalse
-     */
-    virtual bool GetAddress(char* address) = 0;
-
-    /**
-     * @brief 端末アドレスを設定します。
-     *
-     * @param address 設定する8文字のアドレス
-     * @return 設定できた場合はtrue、それ以外はfalse
-     */
-    virtual bool SetAddress(const char* address) = 0;
-
-    /**
-     * @brief 指定TAGへの測距コマンドを待機せず送信します。
-     *
-     * @param tagAddress 測距対象の8文字TAGアドレス
-     * @return コマンドをUARTへ投入できた場合はtrue、それ以外はfalse
-     */
-    virtual bool StartRanging(const char* tagAddress) = 0;
-
-    /**
-     * @brief UARTから到着済みのRYUW122応答を処理します。
-     */
-    virtual void Update() = 0;
-
-    /**
-     * @brief 処理済みの測距応答を1件取得します。
-     *
-     * @param response 取得した応答の格納先
-     * @return 応答を取得した場合はtrue、それ以外はfalse
-     */
-    virtual bool TryTakeResponse(Ryuw122PortResponse& response) = 0;
-};
-
-/**
- * @brief RYUW122のUART初期化と非同期測距を管理します。
+ * @brief 初期化済みRYUW122の非同期測距を管理します。
  */
 class Ryuw122Controller
 {
@@ -216,8 +87,7 @@ public:
     Ryuw122Controller& operator=(const Ryuw122Controller& other) = delete;
 
     /**
-     * @brief RYUW122との通信を開始し、モード、ネットワークID、アドレスを設定します。
-     * 現在値が目的の値と一致している項目は書き換えません。
+     * @brief InitializerでRYUW122を初期化し、測距状態を開始可能にします。
      *
      * @return 初期化結果
      */
@@ -286,34 +156,6 @@ private:
     };
 
     /**
-     * @brief 実行時設定からRYUW122へ設定する8文字のアドレスを生成します。
-     *
-     * @param address 生成したアドレスを格納する9バイト以上の領域
-     */
-    void BuildAddress(char* address) const;
-
-    /**
-     * @brief RYUW122の動作モードを確認し、必要な場合だけ変更します。
-     *
-     * @return モード設定結果
-     */
-    EnRyuw122InitResult ConfigureMode();
-
-    /**
-     * @brief RYUW122のネットワークIDを確認し、必要な場合だけ変更します。
-     *
-     * @return ネットワークID設定結果
-     */
-    EnRyuw122InitResult ConfigureNetworkId();
-
-    /**
-     * @brief RYUW122のアドレスを確認し、必要な場合だけ変更します。
-     *
-     * @return アドレス設定結果
-     */
-    EnRyuw122InitResult ConfigureAddress();
-
-    /**
      * @brief 現在時刻で測距結果を確定します。
      *
      * @param status 確定する完了状態
@@ -336,6 +178,7 @@ private:
 
     ConfigRuntime& m_configRuntime;
     IRyuw122Port* m_port;
+    Ryuw122Initializer m_initializer;
     Ryuw122TimeProvider m_timeProvider;
     bool m_ownsPort;
     bool m_isReady = false;

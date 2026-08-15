@@ -211,16 +211,21 @@ ANCHORは進行中のUWB処理を安全に終了または排出するが、旧�
 全非マスターノードへ採用した時計差、往復遅延、同期品質を通知する。
 ANCHORは測距時刻を、フォロワーTAGは自ノードのセンサー時刻を同じ基準へ変換できる。
 
-### 5.5 Ryuw122Controller
+### 5.5 Ryuw122InitializerとRyuw122Controller
 
-既存のRYUW122初期化に加え、非同期測距を提供する。
+`Ryuw122Initializer`がRYUW122の起動、復旧、AT設定を一括して担当し、`Ryuw122Controller`が初期化後の非同期測距を担当する。
 
 責務は次のとおりとする。
 
 - G7をM5StickS3のUART送信として使用
 - G1をM5StickS3のUART受信として使用
 - UARTを115200bpsで開始
+- UART初期化後にGPIO8へ接続したNRSTをLOWで200ms保持
+- NRSTをHIGH駆動せず、GPIO8を入力へ戻してハイインピーダンス開放
+- NRST開放後に1秒を超えて待機してからAT通信を開始
+- 最初のAT疎通確認失敗時に限り、NRST復旧と疎通確認を1回再試行
 - TAGまたはANCHORモードの設定
+- モードを書き換えた場合だけ、次のATコマンドまで2秒待機
 - UWBネットワークIDと8文字アドレスの設定
 - ANCHORから指定TAGへの非同期測距開始
 - RYUW122受信処理の更新
@@ -229,6 +234,10 @@ ANCHORは測距時刻を、フォロワーTAGは自ノードのセンサー時�
 - タイムアウト後の遅延応答を次ラウンドへ誤帰属させない処理
 
 正常系の測距開始前後に固定`delay()`を追加しない。
+GPIO8の固定待機は起動時のRYUW122復旧だけで使用し、測距中には実行しない。
+UART開始、NRST復旧、AT疎通確認、モード、network ID、address設定の順序は`Ryuw122Initializer`へ集約する。
+GPIO8の物理操作は実機portへ委譲するが、復旧の実行判断とAT設定を別クラスへ分散させない。
+RYUW122ライブラリ内蔵のLOW 5ms、HIGH駆動によるリセット機能は使用しない。
 
 ### 5.6 SequentialRangingController
 
@@ -262,7 +271,8 @@ TAG側とANCHOR側の順次測距状態機械を担当する。
 | `include/EspNowBroadcast.h` | `src/EspNowBroadcast.cpp` | NodeStatusと`m_nodes` |
 | `include/TagMasterCoordinator.h` | `src/TagMasterCoordinator.cpp` | 最小TAG IDによるマスター選出 |
 | `include/NtpTimeSynchronizer.h` | `src/NtpTimeSynchronizer.cpp` | NTP四時刻同期と時刻変換 |
-| `include/Ryuw122Controller.h` | `src/Ryuw122Controller.cpp` | RYUW122初期化と非同期UWB測距 |
+| `include/Ryuw122Initializer.h` | `src/Ryuw122Initializer.cpp` | UART開始、GPIO8 NRST復旧、AT疎通と設定 |
+| `include/Ryuw122Controller.h` | `src/Ryuw122Controller.cpp` | 初期化後の非同期UWB測距 |
 | `include/SequentialRangingController.h` | `src/SequentialRangingController.cpp` | 二重ループ測距と逐次結果公開 |
 | `include/SequentialRangingProtocolCodec.h` | `src/SequentialRangingProtocolCodec.cpp` | `SequentialRangingProtocolCodec`によるwire packetのencode、decode、検証 |
 

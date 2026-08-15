@@ -4,8 +4,40 @@
 #include <cstdint>
 #include <deque>
 #include <string>
+#include <vector>
 
 using byte = uint8_t;
+
+constexpr uint8_t INPUT = 0;
+constexpr uint8_t OUTPUT = 1;
+constexpr uint8_t LOW = 0;
+constexpr uint8_t HIGH = 1;
+
+/**
+ * @brief native testで記録する実機adapter event種別を表します。
+ */
+enum class EnTestHardwareEvent : uint8_t
+{
+    UartBegin,
+    DigitalWrite,
+    PinMode,
+    Delay,
+    Test,
+    SetMode,
+    GetNetworkId,
+};
+
+/**
+ * @brief native testで記録した実機adapter eventを保持します。
+ */
+struct TestHardwareEvent
+{
+    EnTestHardwareEvent type = EnTestHardwareEvent::UartBegin;
+    uint32_t firstValue = 0;
+    uint32_t secondValue = 0;
+};
+
+extern std::vector<TestHardwareEvent> hardwareEvents;
 
 /**
  * @brief test用のマイクロ秒時刻を返します。
@@ -13,6 +45,29 @@ using byte = uint8_t;
  * @return testで設定したマイクロ秒時刻
  */
 uint32_t micros();
+
+/**
+ * @brief native testでGPIOの出力値を記録します。
+ *
+ * @param pin 対象GPIO
+ * @param value 設定する出力値
+ */
+void digitalWrite(uint8_t pin, uint8_t value);
+
+/**
+ * @brief native testでGPIO modeを記録します。
+ *
+ * @param pin 対象GPIO
+ * @param mode 設定するGPIO mode
+ */
+void pinMode(uint8_t pin, uint8_t mode);
+
+/**
+ * @brief native testでblocking待機時間を記録します。
+ *
+ * @param milliseconds 待機時間ms
+ */
+void delay(uint32_t milliseconds);
 
 /**
  * @brief native testでUART入出力を再現します。

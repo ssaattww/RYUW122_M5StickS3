@@ -12,10 +12,28 @@ uint8_t RYUW122::m_lastTxPin = 0;
 uint8_t RYUW122::m_lastRxPin = 0;
 RYUW122BaudRate RYUW122::m_lastBaudRate =
     RYUW122BaudRate::B_115200;
+std::deque<bool> RYUW122::m_testResults;
+std::vector<TestHardwareEvent> hardwareEvents;
 
 namespace
 {
     uint32_t fakeTimeUs = 0;
+
+    /**
+     * @brief Fake portで記録する初期化event種別を表します。
+     */
+    enum class EnFakePortEvent : uint8_t
+    {
+        Begin,
+        Recover,
+        Test,
+        GetMode,
+        SetMode,
+        GetNetworkId,
+        SetNetworkId,
+        GetAddress,
+        SetAddress,
+    };
 
     /**
      * @brief test用の単調増加マイクロ秒時刻を返します。
@@ -40,7 +58,12 @@ namespace
         char networkId[9] = "UWB00001";
         char address[9] = "A0000001";
         char startedTagAddress[9] = {};
+        uint32_t m_beginCount = 0;
+        uint32_t m_recoverCount = 0;
+        uint32_t m_testCount = 0;
         uint32_t startCount = 0;
+        std::deque<bool> m_testResults;
+        std::vector<EnFakePortEvent> m_initializationEvents;
 
         /**
          * @brief test用port初期化結果を返します。
@@ -49,7 +72,18 @@ namespace
          */
         bool Begin() override
         {
+            ++m_beginCount;
+            m_initializationEvents.push_back(EnFakePortEvent::Begin);
             return beginResult;
+        }
+
+        /**
+         * @brief test用NRST復旧要求を記録します。
+         */
+        void Recover() override
+        {
+            ++m_recoverCount;
+            m_initializationEvents.push_back(EnFakePortEvent::Recover);
         }
 
         /**
@@ -59,6 +93,14 @@ namespace
          */
         bool Test() override
         {
+            ++m_testCount;
+            m_initializationEvents.push_back(EnFakePortEvent::Test);
+            if (!m_testResults.empty())
+            {
+                const bool result = m_testResults.front();
+                m_testResults.pop_front();
+                return result;
+            }
             return testResult;
         }
 
@@ -69,6 +111,7 @@ namespace
          */
         EnRyuw122PortMode GetMode() override
         {
+            m_initializationEvents.push_back(EnFakePortEvent::GetMode);
             return mode;
         }
 
@@ -80,6 +123,11 @@ namespace
          */
         bool SetMode(EnRyuw122PortMode nextMode) override
         {
+            m_initializationEvents.push_back(EnFakePortEvent::SetMode);
+            hardwareEvents.push_back(
+                {EnTestHardwareEvent::SetMode,
+                 static_cast<uint32_t>(nextMode),
+                 0});
             mode = nextMode;
             return true;
         }
@@ -92,6 +140,10 @@ namespace
          */
         bool GetNetworkId(char* value) override
         {
+            m_initializationEvents.push_back(
+                EnFakePortEvent::GetNetworkId);
+            hardwareEvents.push_back(
+                {EnTestHardwareEvent::GetNetworkId, 0, 0});
             memcpy(value, networkId, sizeof(networkId));
             return true;
         }
@@ -104,6 +156,8 @@ namespace
          */
         bool SetNetworkId(const char* value) override
         {
+            m_initializationEvents.push_back(
+                EnFakePortEvent::SetNetworkId);
             memcpy(networkId, value, sizeof(networkId));
             return true;
         }
@@ -116,6 +170,8 @@ namespace
          */
         bool GetAddress(char* value) override
         {
+            m_initializationEvents.push_back(
+                EnFakePortEvent::GetAddress);
             memcpy(value, address, sizeof(address));
             return true;
         }
@@ -128,6 +184,8 @@ namespace
          */
         bool SetAddress(const char* value) override
         {
+            m_initializationEvents.push_back(
+                EnFakePortEvent::SetAddress);
             memcpy(address, value, sizeof(address));
             return true;
         }
@@ -215,6 +273,220 @@ namespace
             static_cast<uint8_t>(EnRyuw122InitResult::Ok),
             static_cast<uint8_t>(controller.Begin()));
         TEST_ASSERT_TRUE(controller.IsReady());
+    }
+
+    /**
+     * @brief 実機adapter eventの種別と値を検証します。
+     *
+     * @param index 検証するevent位置
+     * @param type 期待するevent種別
+     * @param firstValue 期待する第1値
+     * @param secondValue 期待する第2値
+     */
+    void AssertHardwareEvent(
+        size_t index,
+        EnTestHardwareEvent type,
+        uint32_t firstValue,
+        uint32_t secondValue)
+    {
+        TEST_ASSERT_TRUE(index < hardwareEvents.size());
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(type),
+            static_cast<uint8_t>(hardwareEvents[index].type));
+        TEST_ASSERT_EQUAL_UINT32(
+            firstValue,
+            hardwareEvents[index].firstValue);
+        TEST_ASSERT_EQUAL_UINT32(
+            secondValue,
+            hardwareEvents[index].secondValue);
+    }
+
+    /**
+     * @brief UART開始後のGPIO8復旧とAT疎通の順序を検証します。
+     */
+    void TestHardwareRecoverySequence()
+    {
+        ConfigRuntime config;
+        HardwareSerial serial;
+        Ryuw122Controller controller(serial, config, GetFakeTimeUs);
+        BeginController(controller);
+
+        TEST_ASSERT_EQUAL_UINT32(7, hardwareEvents.size());
+        AssertHardwareEvent(0, EnTestHardwareEvent::UartBegin, 0, 0);
+        AssertHardwareEvent(1, EnTestHardwareEvent::DigitalWrite, 8, LOW);
+        AssertHardwareEvent(2, EnTestHardwareEvent::PinMode, 8, OUTPUT);
+        AssertHardwareEvent(3, EnTestHardwareEvent::Delay, 200, 0);
+        AssertHardwareEvent(4, EnTestHardwareEvent::PinMode, 8, INPUT);
+        AssertHardwareEvent(5, EnTestHardwareEvent::Delay, 1001, 0);
+        AssertHardwareEvent(6, EnTestHardwareEvent::Test, 0, 0);
+
+        for (const TestHardwareEvent& event : hardwareEvents)
+        {
+            if (event.type == EnTestHardwareEvent::DigitalWrite)
+            {
+                TEST_ASSERT_NOT_EQUAL(HIGH, event.secondValue);
+            }
+        }
+    }
+
+    /**
+     * @brief 実機adapterで初回AT失敗時だけGPIO8復旧を再実行することを検証します。
+     */
+    void TestHardwarePortCommunicationRetrySequence()
+    {
+        RYUW122::QueueTestResult(false);
+        RYUW122::QueueTestResult(true);
+        ConfigRuntime config;
+        HardwareSerial serial;
+        Ryuw122Controller controller(serial, config, GetFakeTimeUs);
+        BeginController(controller);
+
+        TEST_ASSERT_EQUAL_UINT32(13, hardwareEvents.size());
+        AssertHardwareEvent(0, EnTestHardwareEvent::UartBegin, 0, 0);
+        AssertHardwareEvent(1, EnTestHardwareEvent::DigitalWrite, 8, LOW);
+        AssertHardwareEvent(2, EnTestHardwareEvent::PinMode, 8, OUTPUT);
+        AssertHardwareEvent(3, EnTestHardwareEvent::Delay, 200, 0);
+        AssertHardwareEvent(4, EnTestHardwareEvent::PinMode, 8, INPUT);
+        AssertHardwareEvent(5, EnTestHardwareEvent::Delay, 1001, 0);
+        AssertHardwareEvent(6, EnTestHardwareEvent::Test, 0, 0);
+        AssertHardwareEvent(7, EnTestHardwareEvent::DigitalWrite, 8, LOW);
+        AssertHardwareEvent(8, EnTestHardwareEvent::PinMode, 8, OUTPUT);
+        AssertHardwareEvent(9, EnTestHardwareEvent::Delay, 200, 0);
+        AssertHardwareEvent(10, EnTestHardwareEvent::PinMode, 8, INPUT);
+        AssertHardwareEvent(11, EnTestHardwareEvent::Delay, 1001, 0);
+        AssertHardwareEvent(12, EnTestHardwareEvent::Test, 0, 0);
+    }
+
+    /**
+     * @brief 初回AT失敗後の1回限定retryで初期化が成功することを検証します。
+     */
+    void TestCommunicationRetrySucceeds()
+    {
+        ConfigRuntime config;
+        FakeRyuw122Port port;
+        port.m_testResults.push_back(false);
+        port.m_testResults.push_back(true);
+        Ryuw122Controller controller(port, config, GetFakeTimeUs);
+
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122InitResult::Ok),
+            static_cast<uint8_t>(controller.Begin()));
+        TEST_ASSERT_TRUE(controller.IsReady());
+        TEST_ASSERT_EQUAL_UINT32(1, port.m_beginCount);
+        TEST_ASSERT_EQUAL_UINT32(2, port.m_recoverCount);
+        TEST_ASSERT_EQUAL_UINT32(2, port.m_testCount);
+        TEST_ASSERT_EQUAL_UINT32(8, port.m_initializationEvents.size());
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnFakePortEvent::Begin),
+            static_cast<uint8_t>(port.m_initializationEvents[0]));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnFakePortEvent::Recover),
+            static_cast<uint8_t>(port.m_initializationEvents[1]));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnFakePortEvent::Test),
+            static_cast<uint8_t>(port.m_initializationEvents[2]));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnFakePortEvent::Recover),
+            static_cast<uint8_t>(port.m_initializationEvents[3]));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnFakePortEvent::Test),
+            static_cast<uint8_t>(port.m_initializationEvents[4]));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnFakePortEvent::GetMode),
+            static_cast<uint8_t>(port.m_initializationEvents[5]));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnFakePortEvent::GetNetworkId),
+            static_cast<uint8_t>(port.m_initializationEvents[6]));
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnFakePortEvent::GetAddress),
+            static_cast<uint8_t>(port.m_initializationEvents[7]));
+    }
+
+    /**
+     * @brief AT疎通が2回失敗した時点で初期化を打ち切ることを検証します。
+     */
+    void TestCommunicationRetryStopsAfterSecondFailure()
+    {
+        ConfigRuntime config;
+        FakeRyuw122Port port;
+        port.m_testResults.push_back(false);
+        port.m_testResults.push_back(false);
+        Ryuw122Controller controller(port, config, GetFakeTimeUs);
+
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(
+                EnRyuw122InitResult::CommunicationFailed),
+            static_cast<uint8_t>(controller.Begin()));
+        TEST_ASSERT_FALSE(controller.IsReady());
+        TEST_ASSERT_EQUAL_UINT32(1, port.m_beginCount);
+        TEST_ASSERT_EQUAL_UINT32(2, port.m_recoverCount);
+        TEST_ASSERT_EQUAL_UINT32(2, port.m_testCount);
+    }
+
+    /**
+     * @brief AT疎通後の設定失敗ではNRST復旧を追加しないことを検証します。
+     */
+    void TestConfigurationFailureDoesNotRecover()
+    {
+        ConfigRuntime config;
+        FakeRyuw122Port port;
+        port.mode = EnRyuw122PortMode::Unknown;
+        Ryuw122Controller controller(port, config, GetFakeTimeUs);
+
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122InitResult::ModeReadFailed),
+            static_cast<uint8_t>(controller.Begin()));
+        TEST_ASSERT_FALSE(controller.IsReady());
+        TEST_ASSERT_EQUAL_UINT32(1, port.m_beginCount);
+        TEST_ASSERT_EQUAL_UINT32(1, port.m_recoverCount);
+        TEST_ASSERT_EQUAL_UINT32(1, port.m_testCount);
+    }
+
+    /**
+     * @brief mode変更時に2秒待機してからnetwork IDを取得することを検証します。
+     */
+    void TestModeChangeWaitsBeforeNetworkId()
+    {
+        ConfigRuntime config;
+        FakeRyuw122Port port;
+        port.mode = EnRyuw122PortMode::Tag;
+        Ryuw122Controller controller(port, config, GetFakeTimeUs);
+
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122InitResult::Ok),
+            static_cast<uint8_t>(controller.Begin()));
+        TEST_ASSERT_EQUAL_UINT32(3, hardwareEvents.size());
+        AssertHardwareEvent(
+            0,
+            EnTestHardwareEvent::SetMode,
+            static_cast<uint32_t>(EnRyuw122PortMode::Anchor),
+            0);
+        AssertHardwareEvent(1, EnTestHardwareEvent::Delay, 2000, 0);
+        AssertHardwareEvent(
+            2,
+            EnTestHardwareEvent::GetNetworkId,
+            0,
+            0);
+    }
+
+    /**
+     * @brief mode一致時は2秒待機せずnetwork IDを取得することを検証します。
+     */
+    void TestUnchangedModeSkipsModeChangeWait()
+    {
+        ConfigRuntime config;
+        FakeRyuw122Port port;
+        Ryuw122Controller controller(port, config, GetFakeTimeUs);
+
+        TEST_ASSERT_EQUAL_UINT8(
+            static_cast<uint8_t>(EnRyuw122InitResult::Ok),
+            static_cast<uint8_t>(controller.Begin()));
+        TEST_ASSERT_EQUAL_UINT32(1, hardwareEvents.size());
+        AssertHardwareEvent(
+            0,
+            EnTestHardwareEvent::GetNetworkId,
+            0,
+            0);
     }
 
     /**
@@ -565,6 +837,8 @@ namespace
 void setUp()
 {
     fakeTimeUs = 0;
+    hardwareEvents.clear();
+    RYUW122::ResetTestResults();
 }
 
 /**
@@ -585,6 +859,40 @@ uint32_t micros()
 }
 
 /**
+ * @brief native testでGPIOの出力値を記録します。
+ *
+ * @param pin 対象GPIO
+ * @param value 設定する出力値
+ */
+void digitalWrite(uint8_t pin, uint8_t value)
+{
+    hardwareEvents.push_back(
+        {EnTestHardwareEvent::DigitalWrite, pin, value});
+}
+
+/**
+ * @brief native testでGPIO modeを記録します。
+ *
+ * @param pin 対象GPIO
+ * @param mode 設定するGPIO mode
+ */
+void pinMode(uint8_t pin, uint8_t mode)
+{
+    hardwareEvents.push_back({EnTestHardwareEvent::PinMode, pin, mode});
+}
+
+/**
+ * @brief native testでblocking待機時間を記録します。
+ *
+ * @param milliseconds 待機時間ms
+ */
+void delay(uint32_t milliseconds)
+{
+    hardwareEvents.push_back(
+        {EnTestHardwareEvent::Delay, milliseconds, 0});
+}
+
+/**
  * @brief T-005のPlatformIO native test suiteを実行します。
  *
  * @return Unity test結果
@@ -592,6 +900,13 @@ uint32_t micros()
 int main()
 {
     UNITY_BEGIN();
+    RUN_TEST(TestHardwareRecoverySequence);
+    RUN_TEST(TestHardwarePortCommunicationRetrySequence);
+    RUN_TEST(TestCommunicationRetrySucceeds);
+    RUN_TEST(TestCommunicationRetryStopsAfterSecondFailure);
+    RUN_TEST(TestConfigurationFailureDoesNotRecover);
+    RUN_TEST(TestModeChangeWaitsBeforeNetworkId);
+    RUN_TEST(TestUnchangedModeSkipsModeChangeWait);
     RUN_TEST(TestSuccessfulRanging);
     RUN_TEST(TestStartFailureResult);
     RUN_TEST(TestResponseFailureResult);
