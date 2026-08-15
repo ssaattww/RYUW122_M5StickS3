@@ -14,8 +14,9 @@ M5Stack系へ移植する場合はM5Unifiedの共通APIを維持しつつ、boar
 4. `NtpTimeSynchronizer`がmaster基準時刻へ同期し、現在のmaster基準時刻を提供する。
 5. `Ryuw122Controller`がUART経由の非同期UWB測距を管理する。
 6. `SequentialRangingProtocolCodec`と`SequentialRangingController`が順序、wire形式、逐次公開を管理する。
-7. `SequentialRangingDisplay`が最新結果とhealthを固定長snapshot化してM5画面へ表示する。
-8. `RangingDisplayTaskController`が測距更新と画面描画を優先度の異なるFreeRTOSタスクへ分離する。
+7. `SequentialRangingDisplay`が最新結果とhealthを固定長snapshot化し、測距一覧をM5画面へ表示する。
+8. `TagPositionEstimator`、`TagPositionViewController`、`TagPositionGraphRenderer`がTAG自己位置計算、画面切替、位置グラフ描画を管理する。
+9. `RangingDisplayTaskController`が測距更新と画面描画を優先度の異なるFreeRTOSタスクへ分離する。
 
 `main.cpp`は各クラスの生成、起動時初期化、専用タスクの開始に限定する。
 通常運転中のESP-NOW、マスター選出、NTP、RYUW122、逐次測距、表示model更新はcore 1・優先度4の高優先度タスクが所有する。
@@ -52,8 +53,8 @@ A1-T1 -> A1-T2 -> A2-T1 -> A2-T2 -> A3-T1 -> A3-T2
 最終結果の受信直後に、同期完了中であれば次roundを開始する。
 UWB待ちは300ms、NTP応答待ちは100msで、round timeoutはノード数から計算する。
 
-現在実装済みなのは、各ANCHORが各TAGを測距し、結果を1件ずつmaster TAGへ集約・公開し、対象がfollower TAGの場合はそのTAGへ転送するところまでである。
-master TAGはroundの受信済み組み合わせと欠損を管理するが、測距結果の永続履歴や座標計算、EKFはまだ保持・実行しない。
+現在実装済みなのは、各ANCHORが各TAGを測距し、結果を1件ずつmaster TAGへ集約・公開し、対象がfollower TAGの場合はそのTAGへ転送する処理と、各TAGが自TAG向けlast-successから自己位置を計算して表示する処理である。
+master TAGはroundの受信済み組み合わせと欠損を管理する。測距結果の永続履歴、非線形反復、外れ値除去、EKFは保持・実行しない。
 
 RYUW122はG7をUART TX、G1をUART RXとして115200bpsで使用する。
 NRSTはGPIO8へ接続する。起動時はUART初期化後にNRSTをLOWで200ms保持し、GPIO8を入力へ戻してハイインピーダンス開放した後、1秒を超えて待機してからAT通信を開始する。
@@ -66,6 +67,19 @@ TAG初期化時は`TAG_SEND`で1 byteの`T`を測距応答payloadとして登録
 測距応答は`+ANCHOR_RCV=<addr>,<len>,<data>,<distance>`と末尾RSSI付きの両形式を受理する。距離は純数値または空白に続く`cm`を許可し、8文字address、payload長、距離範囲、RSSI範囲は厳密に検証する。
 `+ERR=<n>`、応答parse失敗、UART投入失敗、300ms timeoutは内部診断理由として区別するが、ESP-NOW wireでは既存の`FAIL`または`TIMEOUT`を維持する。timeout後の遅延応答排出中は次の測距開始を保留し、`Busy`を`START`失敗として公開せず、同一ANCHOR・TAGのUART commandを重複送信しない。timeout診断の`CODE=0`は`+OK`未観測、`CODE=1`は`+OK`観測後に測距完了応答なしを表す。
 
+## TAG自己位置計算
+
+TAG自己位置は、現在の固定長snapshotに含まれる自TAG向けlast-successと、同じANCHOR IDの`NodeStatus`座標を結合して計算する。
+距離とANCHOR座標はmm単位で扱う。`anchor_pos_x`と`anchor_pos_y`にはRYUW122距離と同じ座標系・単位の値を設定する。
+
+3台以上の有効なANCHORについて、先頭ANCHORを基準に円の式を差し引いて一次式へ変換し、`TagPositionEstimator`が可変数入力の線形最小二乗法で2次元座標を求める。
+3台では2本の一次式を解く形になり、4台以上では余剰式を含む最小二乗解になる。ANCHOR数に応じた計算コードの切替は行わない。
+3台未満、座標欠損、非有限値、全ANCHORが一直線またはほぼ一直線の退化配置では位置を確定しない。
+表示するRMSは、求めた位置から各ANCHORまでの幾何距離と測距値との差の二乗平均平方根である。
+
+現在の`SequentialRangingDisplaySnapshot`は成功測距と受信ノードをそれぞれ最大5件保持するため、画面の自己位置計算で使用できるANCHORも最大5台である。
+計算器自体は入力配列と要素数を受け取り、3台以上の可変数ANCHORを同じAPIで処理する。
+
 ## 画面
 
 画面には次を表示する。
@@ -75,18 +89,21 @@ TAG初期化時は`TAG_SEND`で1 byteの`T`を測距応答payloadとして登録
 - TAGの現在時刻: master基準現在秒。masterは単調時刻provider、followerは同期済みローカル現在時刻から取得し、未同期時は`NOW UNSYNC`とする
 - TAGのANCHOR別last-success: 自TAG向け成功結果だけを最大5件、ANCHOR ID昇順で表示する
 - TAGのANCHOR別current failure: 自TAG向けの現在失敗だけを最大5件、ANCHOR ID昇順でANCHOR ID、`FAIL`または`TIME`、duration msとして表示する
+- TAG自己位置ページ: X・Y座標、使用ANCHOR数、距離残差RMS、ANCHOR配置、TAG推定位置
 - 受信ノード: `NodeMap`の先頭5件のID、role、座標
 - 起動health: RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗
 
-master TAGが収集した他TAG向け結果は一覧へ入れず、follower TAGでは自TAG向け転送結果を表示する。
+TAGではBtnAを押すたびに測距一覧ページと自己位置ページを切り替える。ANCHORではBtnAによるページ切替を行わず、TAGからANCHORへmodeが変化した場合は測距一覧ページへ戻す。
+自己位置ページはANCHORを白い点、推定TAG位置を赤い点として、現在の座標範囲へ自動スケールして描画する。位置を確定できない場合は不足ANCHOR数または退化配置を文字で表示する。
+master TAGが収集した他TAG向け結果は一覧と自己位置計算へ入れず、follower TAGでは自TAG向け転送結果を使用する。
 画面上の統一時刻は、現在のmaster基準時刻を意味する。
 成功距離は値に応じてmm、m、kmへ短縮する。後続の失敗はlast-successを上書きせず、同じANCHORの次回成功時にcurrent failureだけを解除する。
-表示eventの取り込み、固定長一覧保持、TAGとANCHORの表示判断、描画は`SequentialRangingDisplay`へ集約する。
+表示eventの取り込み、固定長一覧保持、TAGとANCHORの表示判断、snapshot生成は`SequentialRangingDisplay`へ集約し、自己位置計算と位置グラフ描画は専用クラスへ分離する。
 高優先度タスクは容量1の固定長snapshot queueを上書きし、低優先度タスクはcontroller、broadcast、NTPのFIFOへ直接触れずに最新snapshotだけを描画する。
 画面転送中も高優先度測距タスクは継続し、ANCHORの測距完了時は`AnchorIdle`を含む最新状態を次のsnapshotへ反映する。
 この表示分離はRYUW122の300ms timeoutを変更しない。
 task、snapshot queue、診断queueの作成に失敗した場合は部分生成物を破棄し、`TASK START FAILED`をM5画面へ永続表示する。
-M5StickS3の135×240 pixel画面ではline heightを10 pixelとし、`SEQ`、`NOW`、成功headerと最大5行、失敗headerと最大5行、NodeStatus headerと最大5行をY=23から213へ描画する。
+M5StickS3の135×240 pixel画面ではline heightを10 pixelとし、測距一覧ページは`SEQ`、`NOW`、成功headerと最大5行、失敗headerと最大5行、NodeStatus headerと最大5行をY=23から213へ描画する。
 各結果行は通常文字倍率で135 pixel幅内へ収める。
 
 ## NT-ShellとNVS preferences
@@ -106,8 +123,8 @@ USB SerialとNT-Shellは115200bpsで動作する。
 | `espnow_channel` | `u8` | `4` | ESP-NOWのWi-Fiチャンネル |
 | `wifi_power_save` | `bool` | `false` | Wi-Fi Modem Sleep。既定は時刻精度優先でOFF |
 | `node_id` | `u8` | `0` | 全ノードで一意にするID |
-| `anchor_pos_x` | `u16` | `0` | ANCHOR X座標 |
-| `anchor_pos_y` | `u16` | `0` | ANCHOR Y座標 |
+| `anchor_pos_x` | `u16` | `0` | ANCHOR X座標[mm] |
+| `anchor_pos_y` | `u16` | `0` | ANCHOR Y座標[mm] |
 
 設定は起動時に`ConfigRuntime`へ読み込む。
 NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映するため再起動する。
@@ -130,16 +147,20 @@ modeを変更する場合はNVSの`run_mode`を設定して再起動し、RYUW12
 | `Ryuw122ResponseParser` | `include/Ryuw122ResponseParser.h` | RYUW122測距応答とerror応答の厳密解析 |
 | `SequentialRangingProtocolCodec` | `include/SequentialRangingProtocolCodec.h` | 測距packetの固定wire codec |
 | `SequentialRangingController` | `include/SequentialRangingController.h` | 二重loop、逐次event、round summary |
-| `SequentialRangingDisplay` | `include/SequentialRangingDisplay.h` | M5画面表示 |
+| `SequentialRangingDisplay` | `include/SequentialRangingDisplay.h` | 固定長snapshotと測距一覧表示 |
+| `TagPositionEstimator` | `include/TagPositionEstimator.h` | 可変数ANCHORの2次元線形最小二乗位置計算 |
+| `TagPositionViewController`、`TagPositionInput` | `include/TagPositionViewController.h`、`include/TagPositionInput.h` | TAGのBtnAページ切替とM5入力境界 |
+| `TagPositionGraphRenderer` | `include/TagPositionGraphRenderer.h` | snapshotからの測距・座標結合と位置グラフ描画 |
 | `RangingDisplayTaskController` | `include/RangingDisplayTaskController.h` | 高優先度測距更新、低優先度画面転送、固定長snapshot同期 |
 
 ## 使い方の概要
 
 1. 各端末へ一意の`node_id`、`run_mode`、共通の`espnow_channel`を設定する。
-2. ANCHORでは必要に応じて`anchor_pos_x`と`anchor_pos_y`を設定する。
+2. ANCHORでは`anchor_pos_x`と`anchor_pos_y`へ共通座標系のmm値を設定する。
 3. 通常は`wifi_power_save=false`のまま再起動する。
-4. TAG 2台以上とANCHOR 1台以上を起動し、最小TAG IDがmasterになることを画面で確認する。
+4. TAGと、2次元位置を求める場合は一直線上にないANCHOR 3台以上を起動する。複数TAGでは最小TAG IDがmasterになることを画面で確認する。
 5. 同期完了後、TAG画面の現在master時刻と自TAG向けANCHOR別最新測距を確認する。
+6. TAGのBtnAを押し、自己位置ページのX・Y座標、RMS、ANCHORとTAGの位置グラフを確認する。
 
 ## テスト、build、保留事項
 
@@ -147,9 +168,10 @@ PlatformIO native環境はT-003からT-009を分離しており、T-009はproduc
 `native_t005`はproductionの`Ryuw122ResponseParser`を直接通し、公式4 field、RSSI付き5 field、`cm`、厳密なrangeと`+ERR`を検証する。
 `native_t008`は成功履歴、現在失敗、成功時解除、5件ずつの配置、135 pixel幅、固定長snapshotを検証する。
 `native_t015`はproductionの`RangingDisplayTaskController.cpp`をFreeRTOS・M5・依存stubと直接結合し、task設定、更新順、snapshot上書き、診断queue、Serial境界、作成失敗rollback、停止順を検証する。
+`native_tag_position`は3台の厳密解、4台の線形最小二乗解、ANCHOR不足、退化配置、TAGのBtnA画面切替、ANCHORでのBtnA無効化を検証する。
 3 ANCHOR×2 TAGの順序、逐次公開、時刻変換、round完了、基本timeout、master変更reset、再同期をhost上で検証する。
 M5StickS3は通常版`m5stack-sticks3`と診断版`m5stack-sticks3-diagnostic`をそれぞれclean/full buildする。
 
-EKFと座標計算は未実装であり、逐次結果を将来の非同期観測入力として利用する前提である。
+自己位置計算は現在snapshot内の最大5台を対象とする線形最小二乗であり、測距履歴、非線形最小二乗による反復補正、外れ値除去、重み付け、EKFは未実装である。
 アプリケーションACK、複雑な再送、輻輳制御、障害時の完全自動復旧は未実装である。
-複数実機での無線、packet loss、queue飽和、時計ドリフト、Wi-Fi省電力差、画面視認性、NT-Shell同時操作、M5Stack系への実移植は実機検証へ保留する。
+複数実機での無線、packet loss、queue飽和、時計ドリフト、Wi-Fi省電力差、自己位置精度、遮蔽物によるNLOS誤差、画面視認性、NT-Shell同時操作、M5Stack系への実移植は実機検証へ保留する。
