@@ -182,13 +182,13 @@ void TestBurstKeepsLatestPerAnchorInIdOrder()
     TEST_ASSERT_EQUAL_UINT32(0, controller.SummaryRemaining());
     display.Draw(EnRunMode::Tag);
     TEST_ASSERT_EQUAL_STRING(
-        "A1 999mm@0000000104s",
+        "A1 999mm@000104s",
         canvas.GetTextAtY(47));
     TEST_ASSERT_EQUAL_STRING(
-        "A2 200mm@0000000102s",
+        "A2 200mm@000102s",
         canvas.GetTextAtY(59));
     TEST_ASSERT_EQUAL_STRING(
-        "A3 300mm@0000000103s",
+        "A3 300mm@000103s",
         canvas.GetTextAtY(71));
     TEST_ASSERT_FALSE(canvas.Contains("SUM"));
     TEST_ASSERT_FALSE(display.Update());
@@ -220,7 +220,7 @@ void TestMasterTagFiltersMeasurementsForOtherTags()
 
     TEST_ASSERT_NOT_NULL(strstr(canvas.GetTextAtY(23), "M RUN"));
     TEST_ASSERT_EQUAL_STRING(
-        "A4 444mm@0000000201s",
+        "A4 444mm@000201s",
         canvas.GetTextAtY(47));
     TEST_ASSERT_EQUAL_STRING("", canvas.GetTextAtY(59));
     TEST_ASSERT_FALSE(canvas.Contains("999mm"));
@@ -251,9 +251,9 @@ void TestFollowerTagDrawsForwardedMeasurementAndCurrentTime()
     display.Draw(EnRunMode::Tag);
 
     TEST_ASSERT_NOT_NULL(strstr(canvas.GetTextAtY(23), "F FOLLOW"));
-    TEST_ASSERT_EQUAL_STRING("NOW 0001234567s", canvas.GetTextAtY(35));
+    TEST_ASSERT_EQUAL_STRING("NOW 234567s", canvas.GetTextAtY(35));
     TEST_ASSERT_EQUAL_STRING(
-        "A6 600mm@0001234500s",
+        "A6 600mm@234500s",
         canvas.GetTextAtY(47));
 }
 
@@ -299,20 +299,20 @@ void TestMeasurementTimeValidityAndZeroValue()
     display.Draw(EnRunMode::Tag);
 
     TEST_ASSERT_EQUAL_STRING(
-        "A1 1mm@0000000000s",
+        "A1 1mm@000000s",
         canvas.GetTextAtY(47));
     TEST_ASSERT_EQUAL_STRING(
-        "A2 2mm@0000000000s",
+        "A2 2mm@000000s",
         canvas.GetTextAtY(59));
     TEST_ASSERT_EQUAL_STRING(
-        "A3 3mm@0000000003s",
+        "A3 3mm@000003s",
         canvas.GetTextAtY(71));
     TEST_ASSERT_EQUAL_STRING("A4 4mm@UNSYNC", canvas.GetTextAtY(83));
     TEST_ASSERT_EQUAL_STRING("A5 5mm@UNSYNC", canvas.GetTextAtY(95));
 }
 
 /**
- * @brief NOWと計測時刻が同じ10桁秒境界で折り返すことを確認します。
+ * @brief NOWと計測時刻が同じ6桁秒境界で折り返すことを確認します。
  */
 void TestMasterTimeModuloBoundaryIsShared()
 {
@@ -322,7 +322,7 @@ void TestMasterTimeModuloBoundaryIsShared()
     M5Canvas canvas;
     SetLocalNode(broadcast, 2, EnRunMode::Tag);
     timeSynchronizer.SetCurrentMasterTime(
-        uint64_t{10000000000} * 1000000U);
+        uint64_t{1000000} * 1000000U);
     SequentialRangingDisplay display(
         controller,
         broadcast,
@@ -330,24 +330,24 @@ void TestMasterTimeModuloBoundaryIsShared()
         canvas);
     SetHealthy(display);
     controller.PushMeasurement(MakeMeasurement(
-        1, 2, 1, uint64_t{9999999999}));
+        1, 2, 1, uint64_t{999999}));
     controller.PushMeasurement(MakeMeasurement(
-        2, 2, 2, uint64_t{10000000000}));
+        2, 2, 2, uint64_t{1000000}));
 
     TEST_ASSERT_TRUE(display.Update());
     display.Draw(EnRunMode::Tag);
 
-    TEST_ASSERT_EQUAL_STRING("NOW 0000000000s", canvas.GetTextAtY(35));
+    TEST_ASSERT_EQUAL_STRING("NOW 000000s", canvas.GetTextAtY(35));
     TEST_ASSERT_EQUAL_STRING(
-        "A1 1mm@9999999999s",
+        "A1 1mm@999999s",
         canvas.GetTextAtY(47));
     TEST_ASSERT_EQUAL_STRING(
-        "A2 2mm@0000000000s",
+        "A2 2mm@000000s",
         canvas.GetTextAtY(59));
 }
 
 /**
- * @brief 最大ANCHOR IDのtimeoutと10桁時刻が135 pixel幅へ収まることを確認します。
+ * @brief 最大ANCHOR IDのtimeoutと6桁時刻が135 pixel幅へ収まることを確認します。
  */
 void TestMaximumTimeoutLineFitsWidth()
 {
@@ -366,16 +366,16 @@ void TestMaximumTimeoutLineFitsWidth()
         255,
         2,
         UINT32_MAX,
-        uint64_t{9999999999},
+        uint64_t{999999},
         EnRangeResultStatus::TimedOut));
 
     TEST_ASSERT_TRUE(display.Update());
     display.Draw(EnRunMode::Tag);
 
     TEST_ASSERT_EQUAL_STRING(
-        "A255 TIMEOUT@9999999999s",
+        "A255 TIMEOUT@999999s",
         canvas.GetTextAtY(47));
-    TEST_ASSERT_EQUAL_INT(134, canvas.GetTextRightAtY(47));
+    TEST_ASSERT_EQUAL_INT(124, canvas.GetTextRightAtY(47));
     AssertLineFits(canvas, 47);
 }
 
@@ -403,7 +403,7 @@ void TestCurrentMasterTimeRefreshesOncePerSecond()
     timeSynchronizer.SetCurrentMasterTime(2000000U);
     TEST_ASSERT_TRUE(display.Update());
     display.Draw(EnRunMode::Tag);
-    TEST_ASSERT_EQUAL_STRING("NOW 0000000002s", canvas.GetTextAtY(35));
+    TEST_ASSERT_EQUAL_STRING("NOW 000002s", canvas.GetTextAtY(35));
 
     timeSynchronizer.ClearCurrentMasterTime();
     TEST_ASSERT_TRUE(display.Update());
@@ -457,30 +457,30 @@ void TestEightAnchorResultsAndThreeNodesFitScreen()
     TEST_ASSERT_TRUE(display.Update());
     display.Draw(EnRunMode::Tag);
 
-    TEST_ASSERT_EQUAL_STRING("NOW 9999999999s", canvas.GetTextAtY(35));
+    TEST_ASSERT_EQUAL_STRING("NOW 999999s", canvas.GetTextAtY(35));
     TEST_ASSERT_EQUAL_STRING(
-        "A1 1mm@9999999992s",
+        "A1 1mm@999992s",
         canvas.GetTextAtY(47));
     TEST_ASSERT_EQUAL_STRING(
-        "A2 12345mm@9999999993s",
+        "A2 12345mm@999993s",
         canvas.GetTextAtY(59));
     TEST_ASSERT_EQUAL_STRING(
-        "A7 99999mm@9999999994s",
+        "A7 99999mm@999994s",
         canvas.GetTextAtY(71));
     TEST_ASSERT_EQUAL_STRING(
-        "A8 FAIL@9999999995s",
+        "A8 FAIL@999995s",
         canvas.GetTextAtY(83));
     TEST_ASSERT_EQUAL_STRING(
-        "A50 TIMEOUT@9999999996s",
+        "A50 TIMEOUT@999996s",
         canvas.GetTextAtY(95));
     TEST_ASSERT_EQUAL_STRING(
-        "A100 MISS@9999999997s",
+        "A100 MISS@999997s",
         canvas.GetTextAtY(107));
     TEST_ASSERT_EQUAL_STRING(
-        "A200 99999m@9999999998s",
+        "A200 99999m@999998s",
         canvas.GetTextAtY(119));
     TEST_ASSERT_EQUAL_STRING(
-        "A255 4294km@9999999999s",
+        "A255 4294km@999999s",
         canvas.GetTextAtY(131));
     TEST_ASSERT_FALSE(canvas.Contains("A9 9mm"));
     TEST_ASSERT_EQUAL_STRING("ID MODE X,Y", canvas.GetTextAtY(143));
@@ -614,7 +614,7 @@ void TestMasterResetGenerationClearsAnchorResults()
         "F FOLLOW Q:UNSYNC"));
     TEST_ASSERT_EQUAL_STRING("", canvas.GetTextAtY(47));
     TEST_ASSERT_EQUAL_STRING("", canvas.GetTextAtY(59));
-    TEST_ASSERT_EQUAL_STRING("NOW 0000000001s", canvas.GetTextAtY(35));
+    TEST_ASSERT_EQUAL_STRING("NOW 000001s", canvas.GetTextAtY(35));
 }
 
 /**

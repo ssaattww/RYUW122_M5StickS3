@@ -137,7 +137,7 @@ void SequentialRangingDisplay::DrawTagResults()
     if (m_hasCurrentMasterTime)
     {
         m_canvas.printf(
-            "NOW %010llus",
+            "NOW %06llus",
             static_cast<unsigned long long>(
                 (m_currentMasterTimeUs / 1000000U) %
                 m_masterTimeModuloSeconds));
@@ -179,7 +179,7 @@ void SequentialRangingDisplay::DrawTagResults()
                     (measurement.rangingCompletedMasterTimeUs / 1000000U) %
                     m_masterTimeModuloSeconds);
             m_canvas.printf(
-                "A%u %s@%010llus",
+                "A%u %s@%06llus",
                 measurement.anchorId,
                 resultText,
                 measuredSecond);

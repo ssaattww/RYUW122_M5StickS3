@@ -66,8 +66,8 @@ private:
     static constexpr size_t m_maxAnchorResultCount = 8U;
     static constexpr int m_tagResultFirstLineIndex = 2;
     static constexpr int m_receivedNodeHeaderLineIndex = 10;
-    static constexpr float m_tagResultTextScaleX = 0.9F;
-    static constexpr uint64_t m_masterTimeModuloSeconds = 10000000000U;
+    static constexpr float m_tagResultTextScaleX = 1.0F;
+    static constexpr uint64_t m_masterTimeModuloSeconds = 1000000U;
 
     /**
      * @brief 状態の短縮表示名を取得します。

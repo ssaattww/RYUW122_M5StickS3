@@ -1144,15 +1144,15 @@ TAGでは`EspNowBroadcast::GetLocalStatus()`の自ノードIDと一致するmeas
 `NtpTimeSynchronizer::TryGetCurrentMasterTime()`は、自ノードがマスターTAGならtime providerの現在値を返す。
 フォロワーTAGでは同期確定時のローカル・マスター対応点から現在ローカル時刻をマスター時刻へ変換し、マスター未選出または未同期ならfalseを返す。
 本画面で統一時刻とは、このAPIが返す現在のマスターTAG基準時刻を意味する。
-TAG画面はこの現在値をマスター基準秒の下10桁として`NOW`行へ表示し、秒が変化したときに再描画する。
-有効な計測完了時刻も同じ10,000,000,000秒moduloの10桁秒として表示し、`NOW`と同じ折り返し基準で比較できるようにする。
+TAG画面はこの現在値をマスター基準秒の下6桁として`NOW`行へ表示し、秒が変化したときに再描画する。
+有効な計測完了時刻も同じ1,000,000秒moduloの6桁秒として表示し、`NOW`と同じ折り返し基準で比較できるようにする。
 ANCHORではTAG専用の現在時刻とANCHOR別結果一覧を表示しない。
 round summaryはcontroller FIFOから取り出すが、8 ANCHOR結果を優先するため画面には表示しない。
 
 表示判断、固定長一覧保持、単位変換、描画は`SequentialRangingDisplay`へ集約する。
 `main.cpp`は既存`NtpTimeSynchronizer`を表示クラスのconstructorへ渡すcompositionだけを追加し、時刻計算、結果保持、描画を行わない。
 M5StickS3の135×240 pixel画面では、状態をY=23、現在時刻をY=35、最大8 ANCHOR結果をY=47から131、NodeStatus headerをY=143、3件をY=155、167、179へ配置する。
-ANCHOR結果行だけ横方向文字倍率を0.9とし、最大ANCHOR ID、`TIMEOUT`、最大距離単位、10桁秒を既存の135 pixel幅へ収める。
+ANCHOR結果行は通常文字倍率とし、最大ANCHOR ID、`TIMEOUT`、最大距離単位、6桁秒を既存の135 pixel幅へ収める。
 RYUW122、ESP-NOW transport、NodeStatus broadcastの初期化失敗は通常表示より優先して保持表示する。
 master session変更時はANCHOR別measurement一覧と表示品質を破棄する。
 

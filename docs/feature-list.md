@@ -74,12 +74,12 @@ network IDは`UWB00001`、UWBアドレスはroleとnode IDから`T0000001`また
 master TAGが収集した他TAG向け結果は一覧へ入れず、follower TAGでは自TAG向け転送結果を表示する。
 画面上の統一時刻は、現在のmaster基準時刻を意味する。
 成功距離は値に応じてmm、m、kmへ短縮し、失敗は`FAIL`、`TIMEOUT`、`MISS`で区別する。
-計測時刻は現在時刻と共通の10桁master秒moduloで表示する。
+計測時刻は現在時刻と共通の6桁master秒moduloで表示し、距離表示の横幅を優先する。
 時刻品質が`Synchronized`、`PowerSaveEnabled`、`ReceiveTimestampUnavailable`なら0秒を含め有効とし、`SynchronizationExpired`、`Unsynchronized`、未知値では`@UNSYNC`を表示する。
 ANCHORではTAG専用の現在時刻と距離一覧を表示しない。
 表示eventの取り込み、固定長一覧保持、TAGとANCHORの表示判断、描画は`SequentialRangingDisplay`へ集約する。
 M5StickS3の135×240 pixel画面では、現在時刻をY座標35、最大8 ANCHOR結果をY座標47から131、受信ノード3件をY座標155、167、179へ描画する。
-ANCHOR結果行は横方向文字倍率0.9で、最大ID・距離・status・10桁秒を135 pixel幅内へ収める。
+ANCHOR結果行は通常文字倍率で、最大ID・距離・status・6桁秒を135 pixel幅内へ収める。
 
 ## NT-ShellとNVS preferences
 
