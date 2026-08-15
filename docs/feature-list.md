@@ -48,6 +48,11 @@ A1-T1 -> A1-T2 -> A2-T1 -> A2-T2 -> A3-T1 -> A3-T2
 UWB待ちは300ms、NTP応答待ちは100msで、round timeoutはノード数から計算する。
 
 RYUW122はG7をUART TX、G1をUART RXとして115200bpsで使用する。
+NRSTはGPIO8へ接続する。起動時はUART初期化後にNRSTをLOWで200ms保持し、GPIO8を入力へ戻してハイインピーダンス開放した後、1秒を超えて待機してからAT通信を開始する。
+最初のAT疎通確認に失敗した場合だけ同じNRST復旧を1回再実行し、それでも応答しない場合は起動healthへ失敗を保持表示する。
+この待機は起動時だけで、非同期測距の最短周期には固定待機を追加しない。
+UART開始、NRST復旧、AT疎通確認、mode、network ID、address設定は`Ryuw122Initializer`へ集約する。
+modeを書き換えた場合はRYUW122の応答停止期間を避けるため、次のATコマンドまで2秒待機する。modeが既に一致する場合は追加待機しない。
 network IDは`UWB00001`、UWBアドレスはroleとnode IDから`T0000001`または`A0000010`のように生成する。
 
 ## 画面
@@ -93,7 +98,8 @@ NT-Shellで永続値を変更した後は、通信やRYUW122へ確実に反映�
 | `EspNowBroadcast`、`NodeStatusCodec` | `include/EspNowBroadcast.h`、`include/NodeStatus.h` | ノード検出と状態wire形式 |
 | `TagMasterCoordinator` | `include/TagMasterCoordinator.h` | master選出とsession変更 |
 | `NtpTimeProtocolCodec`、`NtpTimeSynchronizer` | `include/NtpTimeProtocolCodec.h`、`include/NtpTimeSynchronizer.h` | NTP packet、同期、時刻変換 |
-| `Ryuw122Controller` | `include/Ryuw122Controller.h` | RYUW122初期化と非同期測距 |
+| `Ryuw122Initializer` | `include/Ryuw122Initializer.h` | UART開始、GPIO8 NRST復旧、AT疎通と設定 |
+| `Ryuw122Controller` | `include/Ryuw122Controller.h` | 初期化後の非同期測距 |
 | `SequentialRangingProtocolCodec` | `include/SequentialRangingProtocolCodec.h` | 測距packetの固定wire codec |
 | `SequentialRangingController` | `include/SequentialRangingController.h` | 二重loop、逐次event、round summary |
 | `SequentialRangingDisplay` | `include/SequentialRangingDisplay.h` | M5画面表示 |

@@ -15,7 +15,9 @@ namespace
 {
     constexpr uint8_t Ryuw122RxPin = 1;
     constexpr uint8_t Ryuw122TxPin = 7;
-    constexpr char Ryuw122NetworkId[] = "UWB00001";
+    constexpr uint8_t Ryuw122ResetPin = 8;
+    constexpr uint32_t Ryuw122ResetHoldMs = 200U;
+    constexpr uint32_t Ryuw122RecoveryWaitMs = 1001U;
     constexpr size_t Ryuw122LineCapacity = 96;
     constexpr size_t Ryuw122ResponseQueueCapacity = 4;
 
@@ -232,6 +234,18 @@ namespace
             m_responseQueueHead = 0;
             m_responseQueueCount = 0;
             return m_ryuw122.begin();
+        }
+
+        /**
+         * @brief GPIO8のNRSTをLOW保持後にHigh-Z開放してRYUW122を復旧します。
+         */
+        void Recover() override
+        {
+            digitalWrite(Ryuw122ResetPin, LOW);
+            pinMode(Ryuw122ResetPin, OUTPUT);
+            delay(Ryuw122ResetHoldMs);
+            pinMode(Ryuw122ResetPin, INPUT);
+            delay(Ryuw122RecoveryWaitMs);
         }
 
         /**
@@ -482,6 +496,7 @@ Ryuw122Controller::Ryuw122Controller(
     Ryuw122TimeProvider timeProvider)
     : m_configRuntime(configRuntime),
       m_port(new Ryuw122HardwarePort(serial)),
+      m_initializer(*m_port, configRuntime),
       m_timeProvider(timeProvider != nullptr ? timeProvider : GetDefaultTimeUs),
       m_ownsPort(true)
 {
@@ -493,6 +508,7 @@ Ryuw122Controller::Ryuw122Controller(
     Ryuw122TimeProvider timeProvider)
     : m_configRuntime(configRuntime),
       m_port(&port),
+      m_initializer(*m_port, configRuntime),
       m_timeProvider(timeProvider != nullptr ? timeProvider : GetDefaultTimeUs),
       m_ownsPort(false)
 {
@@ -514,37 +530,8 @@ EnRyuw122InitResult Ryuw122Controller::Begin()
     memset(m_activeTagAddress, 0, sizeof(m_activeTagAddress));
     memset(m_drainTagAddress, 0, sizeof(m_drainTagAddress));
 
-    if (!m_port->Begin())
-    {
-        m_lastResult = EnRyuw122InitResult::SerialBeginFailed;
-        return m_lastResult;
-    }
-
-    if (!m_port->Test())
-    {
-        m_lastResult = EnRyuw122InitResult::CommunicationFailed;
-        return m_lastResult;
-    }
-
-    m_lastResult = ConfigureMode();
-    if (m_lastResult != EnRyuw122InitResult::Ok)
-    {
-        return m_lastResult;
-    }
-
-    m_lastResult = ConfigureNetworkId();
-    if (m_lastResult != EnRyuw122InitResult::Ok)
-    {
-        return m_lastResult;
-    }
-
-    m_lastResult = ConfigureAddress();
-    if (m_lastResult != EnRyuw122InitResult::Ok)
-    {
-        return m_lastResult;
-    }
-
-    m_isReady = true;
+    m_lastResult = m_initializer.Begin();
+    m_isReady = m_lastResult == EnRyuw122InitResult::Ok;
     return m_lastResult;
 }
 
@@ -670,98 +657,7 @@ EnRyuw122InitResult Ryuw122Controller::GetLastResult() const
 
 const char* Ryuw122Controller::GetResultName(EnRyuw122InitResult result)
 {
-    switch (result)
-    {
-    case EnRyuw122InitResult::Ok:
-        return "OK";
-    case EnRyuw122InitResult::SerialBeginFailed:
-        return "SERIAL";
-    case EnRyuw122InitResult::CommunicationFailed:
-        return "AT";
-    case EnRyuw122InitResult::ModeReadFailed:
-        return "MODE_READ";
-    case EnRyuw122InitResult::ModeWriteFailed:
-        return "MODE_WRITE";
-    case EnRyuw122InitResult::NetworkIdReadFailed:
-        return "NETWORK_READ";
-    case EnRyuw122InitResult::NetworkIdWriteFailed:
-        return "NETWORK_WRITE";
-    case EnRyuw122InitResult::AddressReadFailed:
-        return "ADDRESS_READ";
-    case EnRyuw122InitResult::AddressWriteFailed:
-        return "ADDRESS_WRITE";
-    }
-
-    return "UNKNOWN";
-}
-
-void Ryuw122Controller::BuildAddress(char* address) const
-{
-    const char rolePrefix =
-        m_configRuntime.GetRunMode() == EnRunMode::Tag ? 'T' : 'A';
-    snprintf(
-        address,
-        9,
-        "%c%07u",
-        rolePrefix,
-        static_cast<unsigned int>(m_configRuntime.GetCurrentNodeID()));
-}
-
-EnRyuw122InitResult Ryuw122Controller::ConfigureMode()
-{
-    const EnRyuw122PortMode desiredMode =
-        m_configRuntime.GetRunMode() == EnRunMode::Tag
-            ? EnRyuw122PortMode::Tag
-            : EnRyuw122PortMode::Anchor;
-    const EnRyuw122PortMode currentMode = m_port->GetMode();
-    if (currentMode == EnRyuw122PortMode::Unknown)
-    {
-        return EnRyuw122InitResult::ModeReadFailed;
-    }
-
-    if (currentMode != desiredMode && !m_port->SetMode(desiredMode))
-    {
-        return EnRyuw122InitResult::ModeWriteFailed;
-    }
-
-    return EnRyuw122InitResult::Ok;
-}
-
-EnRyuw122InitResult Ryuw122Controller::ConfigureNetworkId()
-{
-    char currentNetworkId[9] = {};
-    if (!m_port->GetNetworkId(currentNetworkId))
-    {
-        return EnRyuw122InitResult::NetworkIdReadFailed;
-    }
-
-    if (strcmp(currentNetworkId, Ryuw122NetworkId) != 0 &&
-        !m_port->SetNetworkId(Ryuw122NetworkId))
-    {
-        return EnRyuw122InitResult::NetworkIdWriteFailed;
-    }
-
-    return EnRyuw122InitResult::Ok;
-}
-
-EnRyuw122InitResult Ryuw122Controller::ConfigureAddress()
-{
-    char desiredAddress[9] = {};
-    BuildAddress(desiredAddress);
-
-    char currentAddress[9] = {};
-    if (!m_port->GetAddress(currentAddress))
-    {
-        return EnRyuw122InitResult::AddressReadFailed;
-    }
-
-    if (strcmp(currentAddress, desiredAddress) != 0 &&
-        !m_port->SetAddress(desiredAddress))
-    {
-        return EnRyuw122InitResult::AddressWriteFailed;
-    }
-
-    return EnRyuw122InitResult::Ok;
+    return Ryuw122Initializer::GetResultName(result);
 }
 
 void Ryuw122Controller::CompleteRanging(

@@ -18,11 +18,11 @@
 
 ## 現在位置
 
-- 現在フェーズ: 完了
-- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010
+- 現在フェーズ: なし
+- 完了タスク: T-001, T-002, T-003, T-004, T-005, T-006, T-007, T-008, T-009, T-010, T-011
 - 次タスク: なし
 - 次タスク状態: 全タスク完了
-- ブランチ: `codex/multitag-sequential-ranging`
+- ブランチ: `codex/ryuw122-reset-gpio8`
 
 ## タスク一覧
 
@@ -38,6 +38,7 @@
 | T-008 | P5 | アプリケーション統合と逐次表示 | L | T-007 | 完了 | `6ce3365` |
 | T-009 | P5 | 統合テスト、M5StickS3 build、文書同期 | L | T-008 | 完了 | `ecd6e37` |
 | T-010 | P6 | sol high最終レビューと必要修正 | M | T-009 | 完了 | 本タスクのコミット |
+| T-011 | P7 | RYUW122 GPIO8リセット復旧 | M | T-010 | 完了 | 本タスクのコミット |
 
 ## タスク詳細
 
@@ -424,6 +425,49 @@
 - 独立最終fix verification`pass_with_held`、新規findingなし、unexploredなし
 - 実機3 ANCHOR×2 TAG、packet loss、queue飽和、clock drift、M5Stack各機種は保留
 
+### T-011 RYUW122 GPIO8リセット復旧
+
+変更対象:
+
+- `include/Ryuw122Initializer.h`
+- `src/Ryuw122Initializer.cpp`
+- `include/Ryuw122Controller.h`
+- `src/Ryuw122Controller.cpp`
+- `docs/sequential-ranging-time-sync.md`
+- `docs/feature-list.md`
+- 関連PlatformIO native test
+
+実施内容:
+
+- GPIO8をRYUW122のNRST制御へ使用する。
+- UART開始、NRST復旧、AT疎通と設定を`Ryuw122Initializer`へ集約する。
+- UART初期化後にNRSTをLOWで200ms保持し、入力へ戻してハイインピーダンス開放する。
+- リセット開放後に1秒以上待ってからAT通信と既存設定を行う。
+- modeを書き換えた場合だけ次のATコマンドまで2秒待機する。
+- UART TXのLOWまたはフロートでRYUW122が無応答になる問題を起動時に復旧する。
+- 通信確認失敗時に同じ復旧シーケンスを限定回数だけ再実行する。
+
+完了条件:
+
+- GPIO8のLOW、ハイインピーダンス開放、待機、AT初期化の順序をホストテストで確認できる。
+- G7 TX、G1 RX、115200bpsの既存初期化と非同期測距が維持される。
+- 全追加・変更関数へ日本語Doxygenがある。
+- 全native testとM5StickS3 clean/full buildが成功する。
+- 参照資料と異なる実機依存項目が明記される。
+- T-011だけのコミットを作成する。
+
+結果:
+
+- focused native test 19/19成功
+- PlatformIO native test 76/76成功
+- M5StickS3 clean/full build成功
+- RAM 68,144 / 327,680 bytes（20.8%）
+- Flash 1,233,591 / 3,342,336 bytes（36.9%）
+- 通常review finding `T011-NR-001` Mediumは修正済み
+- fix verificationは`pass_with_held`、新規findingなし、unexploredなし
+- 実装前調査、実装、通常review、修正、修正検証を`reports/T-011-*`へ保存済み
+- 新しい再利用可能な開発手順上のSkill gapはなく、追加要件はRYUW122固有の製品設計として記録した。
+
 ## 実機保留項目
 
 次はコードとbuildだけでは完了判定できないため、対応する実機が揃うまで保留として扱う。
@@ -434,3 +478,5 @@
 - NTP offset、RTT、ESP32個体間clock drift
 - マスターTAG電源断および低ID TAG途中参加時の交代
 - Wi-Fi Power Save ON/OFFによる受信timestamp品質差
+- GPIO8とRYUW122 NRSTの実配線、電圧、立上り、UARTウェッジからの実復旧
+- mode変更後2秒待機による実機AT通信成功と起動体感
