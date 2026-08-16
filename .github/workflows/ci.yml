@@ -1,0 +1,107 @@
+name: PlatformIO CI
+
+on:
+  push:
+    branches:
+      - master
+      - "codex/**"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PlatformIO
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          set +e
+          python -m pip install --upgrade pip platformio \
+            >artifacts/setup.stdout.log \
+            2>artifacts/setup.stderr.log
+          status=$?
+          printf 'exit_code=%s\n' "$status" >artifacts/setup.result.txt
+          cat artifacts/setup.stdout.log
+          cat artifacts/setup.stderr.log >&2
+          exit "$status"
+
+      - name: Run native tests and firmware builds
+        shell: bash
+        run: |
+          set +e
+          mkdir -p artifacts
+          git rev-parse HEAD >artifacts/git-revision.txt
+          platformio --version >artifacts/platformio-version.txt 2>&1
+          platformio system info >artifacts/platformio-system-info.log 2>&1
+
+          overall_status=0
+
+          run_and_capture() {
+            local name="$1"
+            shift
+            local stdout_file="artifacts/${name}.stdout.log"
+            local stderr_file="artifacts/${name}.stderr.log"
+            local result_file="artifacts/${name}.result.txt"
+
+            printf 'command=' >"$result_file"
+            printf '%q ' "$@" >>"$result_file"
+            printf '\n' >>"$result_file"
+
+            "$@" >"$stdout_file" 2>"$stderr_file"
+            local status=$?
+            printf 'exit_code=%s\n' "$status" >>"$result_file"
+
+            cat "$stdout_file"
+            cat "$stderr_file" >&2
+
+            if [ "$status" -ne 0 ]; then
+              overall_status=1
+            fi
+          }
+
+          run_and_capture native-tests \
+            platformio test \
+              -e native \
+              -e native_t004 \
+              -e native_t004_transport \
+              -e native_t005 \
+              -e native_t006 \
+              -e native_t007 \
+              -e native_t008 \
+              -e native_t009 \
+              -e native_t015 \
+              -e native_tag_position
+          run_and_capture sticks3-clean \
+            platformio run -e m5stack-sticks3 -t clean
+          run_and_capture sticks3-build \
+            platformio run -e m5stack-sticks3
+          run_and_capture sticks3-diagnostic-clean \
+            platformio run -e m5stack-sticks3-diagnostic -t clean
+          run_and_capture sticks3-diagnostic-build \
+            platformio run -e m5stack-sticks3-diagnostic
+
+          exit "$overall_status"
+
+      - name: Upload diagnostic artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platformio-ci-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 14
+          path: |
+            artifacts/**
